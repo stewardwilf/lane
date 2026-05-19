@@ -15,9 +15,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Footer, Static, RichLog, DataTable, Input, Label
+from textual.widgets import Footer, Static, DataTable, Input, Label
 
-from lane.state import read_state, PoolState, Worktree, write_state
+from lane.state import read_state, PoolState, Worktree
 from lane.recovery import check_stale_workers
 from lane.runner import kill_agent
 
@@ -76,35 +76,21 @@ class DetailPanel(Static):
         self.update("\n".join(lines))
 
 
-class OutputPane(RichLog):
-    """Right pane — shows live agent output."""
+class TerminalView(Static):
+    """Shows a live snapshot of the tmux pane — exactly what Claude looks like."""
 
-    _last_line: str = ""
-
-    def write_clean(self, line: str) -> None:
-        """Write a line, stripping noise from Claude's TUI output."""
-        cleaned = _strip_terminal_codes(line)
-        text = cleaned.strip()
-        if not text:
-            return
-        # Skip Claude's spinner/thinking noise
-        if _is_noise(text):
-            return
-        # Deduplicate consecutive identical lines
-        if text == self._last_line:
-            return
-        self._last_line = text
-        self.write(Text.from_ansi(cleaned))
+    DEFAULT_CSS = """
+    TerminalView {
+        height: 1fr;
+        padding: 0 1;
+        overflow: auto;
+    }
+    """
 
 
 class ReplyInput(Input):
-    """Input bar for sending messages to the running Claude session."""
-
     DEFAULT_CSS = """
-    ReplyInput {
-        dock: bottom;
-        margin: 0 0;
-    }
+    ReplyInput { dock: bottom; margin: 0 0; }
     """
 
 
@@ -175,18 +161,14 @@ class LaneDashboard(App):
         background: $surface;
         border-bottom: solid $primary-background;
     }
-    OutputPane { height: 1fr; padding: 0 1; }
+    TerminalView { height: 1fr; padding: 0 1; }
     #reply-bar {
         height: auto;
         border-top: solid $primary-background;
         background: $surface;
         padding: 0 1;
     }
-    #reply-hint {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
+    #reply-hint { height: 1; padding: 0 1; color: $text-muted; }
     """
 
     BINDINGS = [
@@ -204,13 +186,11 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
-    _log_offsets: dict[str, int]
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
         self.root = root
         self._table_initialized = False
-        self._log_offsets = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -222,9 +202,9 @@ class LaneDashboard(App):
                 yield DetailPanel(id="detail")
             with Vertical(id="right"):
                 yield Static("", id="pane-header")
-                yield OutputPane(id="output-pane", highlight=True, markup=True, max_lines=5000)
+                yield TerminalView(id="term-view")
                 with Vertical(id="reply-bar"):
-                    yield Static("[dim]i to reply · sends to selected worktree's Claude session[/dim]", id="reply-hint")
+                    yield Static("[dim]i to reply · sends to selected worktree[/dim]", id="reply-hint")
                     yield ReplyInput(placeholder="Type a message to Claude...", id="reply-input")
         yield Footer()
 
@@ -233,7 +213,6 @@ class LaneDashboard(App):
         self._poll_timer = self.set_interval(0.5, self._refresh_state)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle Enter in the reply input."""
         if event.input.id != "reply-input":
             return
 
@@ -241,7 +220,6 @@ class LaneDashboard(App):
         event.input.value = ""
 
         if not message:
-            # Refocus the table so keybinds work again
             self.query_one(WorktreeTable).focus()
             return
 
@@ -256,11 +234,9 @@ class LaneDashboard(App):
             return
 
         if wt.status == "busy" and wt.tmux_session:
-            # Send to running Claude session
             _send_to_tmux(wt.tmux_session, message)
             self.notify(f"Sent to {wt.id}", timeout=2)
         elif wt.status == "done":
-            # Start a new Claude session with this as the prompt
             self.notify(f"Continuing {wt.id}...", timeout=2)
             def _cont():
                 try:
@@ -274,8 +250,7 @@ class LaneDashboard(App):
                     self.call_from_thread(self.notify, f"Error: {e}", severity="error")
             Thread(target=_cont, daemon=True).start()
         elif wt.status == "idle":
-            # Dispatch as a new task
-            self.notify(f"Dispatching to {wt.id}...", timeout=2)
+            self.notify(f"Dispatching...", timeout=2)
             def _dispatch():
                 try:
                     from lane.cli import dispatch_task_headless
@@ -303,7 +278,6 @@ class LaneDashboard(App):
         self.query_one(StatusBar).update_from_state(state)
 
         table = self.query_one(WorktreeTable)
-
         if not self._table_initialized:
             for wt in state.worktrees:
                 table.add_row(
@@ -331,25 +305,20 @@ class LaneDashboard(App):
             self.query_one(DetailPanel).update_from_worktree(wt)
             self._update_pane_header(wt)
             self._update_reply_hint(wt)
-            self._tail_output(wt)
+            self._refresh_terminal_view(wt)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key and event.row_key.value:
             new_id = str(event.row_key.value)
             if new_id == self._selected_wt_id:
                 return
-
             self._selected_wt_id = new_id
-            pane = self.query_one(OutputPane)
-            pane.clear()
-
             if self._state:
                 wt = next((w for w in self._state.worktrees if w.id == new_id), None)
                 self.query_one(DetailPanel).update_from_worktree(wt)
                 self._update_pane_header(wt)
                 self._update_reply_hint(wt)
-                if wt and wt.log_path:
-                    self._load_full_log(wt)
+                self._refresh_terminal_view(wt)
 
     def _update_pane_header(self, wt: Worktree | None) -> None:
         header = self.query_one("#pane-header", Static)
@@ -373,49 +342,28 @@ class LaneDashboard(App):
         elif wt.status == "done":
             hint.update(f"[dim]i to continue · starts new Claude session in [bold]{wt.id}[/bold][/dim]")
 
-    def _load_full_log(self, wt: Worktree) -> None:
-        if not wt.log_path:
-            return
-        log_path = Path(wt.log_path)
-        if not log_path.exists():
-            return
-
-        pane = self.query_one(OutputPane)
-        try:
-            content = log_path.read_text()
-            self._log_offsets[wt.id] = len(content)
-            for line in content.splitlines():
-                if line.strip():
-                    pane.write_clean(line)
-        except Exception:
-            pass
-
-    def _tail_output(self, wt: Worktree | None) -> None:
-        if not wt or not wt.log_path:
+    def _refresh_terminal_view(self, wt: Worktree | None) -> None:
+        """Show live tmux pane snapshot for busy worktrees."""
+        view = self.query_one(TerminalView)
+        if not wt:
+            view.update("[dim]Select a worktree[/dim]")
             return
 
-        log_path = Path(wt.log_path)
-        if not log_path.exists():
+        if wt.status == "busy" and wt.tmux_session:
+            content = _capture_tmux_pane(wt.tmux_session)
+            if content is not None:
+                view.update(Text.from_ansi(content))
             return
 
-        pane = self.query_one(OutputPane)
-        offset = self._log_offsets.get(wt.id, 0)
+        if wt.status == "done":
+            view.update(f"[dim]Claude finished. Press [bold]i[/bold] to continue or [bold]r[/bold] to release.[/dim]")
+            return
 
-        try:
-            size = log_path.stat().st_size
-            if size <= offset:
-                return
+        if wt.status == "idle":
+            view.update(f"[dim]Idle. Press [bold]i[/bold] or [bold]n[/bold] to dispatch a task.[/dim]")
+            return
 
-            with open(log_path, "r") as f:
-                f.seek(offset)
-                new_content = f.read()
-                self._log_offsets[wt.id] = size
-
-            for line in new_content.splitlines():
-                if line.strip():
-                    pane.write_clean(line)
-        except Exception:
-            pass
+        view.update(f"[dim]{wt.status}[/dim]")
 
     # ── Actions ─────────────────────────────────────────────────
 
@@ -431,9 +379,7 @@ class LaneDashboard(App):
     def _on_task_submitted(self, description: str | None) -> None:
         if not description:
             return
-
         self.notify(f"Dispatching: {description}...", timeout=3)
-
         def _dispatch():
             try:
                 from lane.cli import dispatch_task_headless
@@ -445,7 +391,6 @@ class LaneDashboard(App):
                     self.call_from_thread(self._select_worktree, wt_id)
             except Exception as e:
                 self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=8)
-
         Thread(target=_dispatch, daemon=True).start()
 
     def action_continue_task(self) -> None:
@@ -460,7 +405,6 @@ class LaneDashboard(App):
         if wt.status == "idle":
             self.notify("Idle — press n or i to dispatch", severity="warning")
             return
-
         self.push_screen(
             TaskInputScreen("Continue task", "Follow-up prompt (or leave empty to resume)"),
             self._on_continue_submitted,
@@ -470,9 +414,7 @@ class LaneDashboard(App):
         wt_id = self._selected_wt_id
         if not wt_id:
             return
-
         self.notify(f"Continuing {wt_id}...", timeout=3)
-
         def _cont():
             try:
                 from lane.cli import _continue_worktree
@@ -483,14 +425,10 @@ class LaneDashboard(App):
                     self.call_from_thread(self.notify, f"Resumed {wt_id}", timeout=3)
             except Exception as e:
                 self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=8)
-
         Thread(target=_cont, daemon=True).start()
 
     def _select_worktree(self, wt_id: str) -> None:
         self._selected_wt_id = wt_id
-        pane = self.query_one(OutputPane)
-        pane.clear()
-        self._log_offsets[wt_id] = 0
         if self._state:
             table = self.query_one(WorktreeTable)
             try:
@@ -509,7 +447,6 @@ class LaneDashboard(App):
         if wt.status != "busy":
             self.notify(f"{wt.id} is not running", severity="warning")
             return
-
         with self.suspend():
             os.system(f"tmux attach-session -t {wt.tmux_session}")
 
@@ -520,7 +457,6 @@ class LaneDashboard(App):
         if not wt or wt.status != "busy":
             self.notify(f"{self._selected_wt_id} is not running", severity="warning")
             return
-
         kill_agent(wt.pid, wt.tmux_session)
         self.notify(f"Stopped {self._selected_wt_id}")
 
@@ -534,7 +470,6 @@ class LaneDashboard(App):
         if wt and wt.status == "busy":
             self.notify("Stop the agent first (s)", severity="warning")
             return
-
         def _release():
             from lane.cli import _do_release
             try:
@@ -542,12 +477,27 @@ class LaneDashboard(App):
                 self.call_from_thread(self.notify, f"Released {self._selected_wt_id}")
             except Exception as e:
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
-
         Thread(target=_release, daemon=True).start()
 
 
+def _capture_tmux_pane(session_name: str) -> str | None:
+    """Capture the current visible content of a tmux pane — exactly what a human would see."""
+    try:
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-t", session_name, "-p", "-e"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        if r.returncode == 0:
+            return r.stdout.rstrip('\n')
+    except Exception:
+        pass
+    return None
+
+
 def _send_to_tmux(session_name: str, text: str) -> None:
-    """Send keystrokes to a tmux session."""
     subprocess.run(
         ["tmux", "send-keys", "-t", session_name, text, "Enter"],
         capture_output=True,
@@ -572,45 +522,6 @@ def _elapsed(started_at: str | None) -> str:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     except Exception:
         return "—"
-
-
-_NOISE_PATTERNS = re.compile(
-    r'^[*+·.●◐◑◒◓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▸▶►]+$'       # bare spinner chars
-    r'|thinking with'                              # thinking indicators
-    r'|Simmering|Coalescing|Crystallizing|Bubbling|Percolating'  # claude spinners
-    r'|Warming|Brewing|Distilling|Fermenting|Steeping'
-    r'|▸▸accepted'                                 # claude footer bar
-    r'|esc\s*to\s*interrupt'                       # footer hints
-    r'|shift\+tab'                                 # footer hints
-    r'|to run in background'                       # footer hints
-    r'|ctrl\+b'                                    # tmux hint leaking
-    r'|^\s*›\s*$'                                  # bare prompt char
-    r'|^\s*❯\s*$'                                  # bare prompt char
-)
-
-
-def _is_noise(text: str) -> bool:
-    """Return True if this line is Claude UI noise (spinners, footer, thinking)."""
-    return bool(_NOISE_PATTERNS.search(text))
-
-
-def _strip_terminal_codes(text: str) -> str:
-    """Strip terminal control sequences, keeping only readable text + basic ANSI colors."""
-    # OSC sequences: \e]...BEL or \e]...ST
-    text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
-    # CSI sequences that aren't SGR (colors): cursor movement, clear, scroll, etc.
-    # Keep SGR (ending in 'm') for color rendering
-    text = re.sub(r'\x1b\[[0-9;]*[A-HJKSTfhlnr]', '', text)
-    # DEC private modes: \e[?...h \e[?...l
-    text = re.sub(r'\x1b\[\?[0-9;]*[hl]', '', text)
-    # Other escape sequences
-    text = re.sub(r'\x1b[()][AB012]', '', text)
-    text = re.sub(r'\x1b[78DEHM]', '', text)
-    # Carriage returns (overwrite artifacts)
-    text = re.sub(r'\r', '', text)
-    # Stray control characters (except newline, tab)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]', '', text)
-    return text
 
 
 def _status_styled(status: str) -> str:
