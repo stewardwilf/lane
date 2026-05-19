@@ -1,0 +1,309 @@
+"""Textual TUI dashboard for lane."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.reactive import reactive
+from textual.timer import Timer
+from textual.widgets import Footer, Header, Static, RichLog, DataTable
+
+from lane.state import read_state, PoolState, Worktree, write_state
+from lane.recovery import check_stale_workers
+from lane.runner import kill_agent
+
+
+class WorktreeTable(DataTable):
+    """Left-pane table of worktree slots."""
+
+    def on_mount(self) -> None:
+        self.add_columns("ID", "Status", "Task", "Elapsed")
+        self.cursor_type = "row"
+        self.zebra_stripes = True
+
+
+class LogViewer(RichLog):
+    """Right-pane log viewer."""
+    pass
+
+
+class StatusBar(Static):
+    """Top status bar showing pool summary."""
+
+    def update_from_state(self, state: PoolState) -> None:
+        busy = sum(1 for w in state.worktrees if w.status == "busy")
+        idle = sum(1 for w in state.worktrees if w.status == "idle")
+        error = sum(1 for w in state.worktrees if w.status == "error")
+        total = len(state.worktrees)
+
+        base = state.config.base_branch
+
+        self.update(
+            f" [bold]lane[/bold]  ·  "
+            f"pool={total}  "
+            f"[blue]busy={busy}[/blue]  "
+            f"[green]idle={idle}[/green]  "
+            f"[red]errors={error}[/red]  "
+            f"·  base={base}"
+        )
+
+
+class DetailPanel(Static):
+    """Bottom-left detail panel for selected worktree."""
+
+    def update_from_worktree(self, wt: Worktree | None) -> None:
+        if wt is None:
+            self.update("No worktree selected")
+            return
+
+        elapsed = _elapsed(wt.started_at) if wt.started_at else "—"
+        lines = [
+            f"[dim]selected[/dim] · [bold]{wt.id}[/bold]",
+            f"[dim]branch[/dim]   {wt.branch or '—'}",
+            f"[dim]task[/dim]     {wt.task or '—'}",
+            f"[dim]task_id[/dim]  {wt.task_id or '—'}",
+            f"[dim]status[/dim]   {_status_styled(wt.status)}",
+            f"[dim]elapsed[/dim]  {elapsed}",
+            f"[dim]pid[/dim]      {wt.pid or '—'}",
+            f"[dim]tmux[/dim]     {wt.tmux_session or '—'}",
+        ]
+        self.update("\n".join(lines))
+
+
+class LaneDashboard(App):
+    """The lane TUI dashboard."""
+
+    TITLE = "lane dashboard"
+
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+    StatusBar {
+        height: 3;
+        padding: 1 2;
+        background: $surface;
+        border-bottom: solid $primary-background;
+    }
+    #main {
+        layout: horizontal;
+        height: 1fr;
+    }
+    #left {
+        width: 1fr;
+        max-width: 64;
+        border-right: solid $primary-background;
+        layout: vertical;
+    }
+    WorktreeTable {
+        height: 1fr;
+    }
+    DetailPanel {
+        height: auto;
+        max-height: 12;
+        padding: 1 2;
+        border-top: solid $primary-background;
+        background: $surface;
+    }
+    #right {
+        width: 2fr;
+        layout: vertical;
+    }
+    #log-header {
+        height: 3;
+        padding: 1 2;
+        background: $surface;
+        border-bottom: solid $primary-background;
+    }
+    LogViewer {
+        height: 1fr;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("a", "attach", "Attach", show=True),
+        Binding("s", "stop", "Stop", show=True),
+        Binding("r", "release", "Release", show=True),
+        Binding("n", "new_task", "New task", show=True),
+        Binding("q", "quit", "Quit", show=True),
+    ]
+
+    root: Path
+    _poll_timer: Timer | None = None
+    _selected_wt_id: str | None = None
+    _last_log_size: int = 0
+    _state: PoolState | None = None
+
+    def __init__(self, root: Path, **kwargs):
+        super().__init__(**kwargs)
+        self.root = root
+
+    def compose(self) -> ComposeResult:
+        yield StatusBar(id="status-bar")
+        with Horizontal(id="main"):
+            with Vertical(id="left"):
+                yield WorktreeTable()
+                yield DetailPanel(id="detail")
+            with Vertical(id="right"):
+                yield Static("", id="log-header")
+                yield LogViewer(id="log-viewer", highlight=True, markup=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._refresh_state()
+        self._poll_timer = self.set_interval(0.5, self._refresh_state)
+
+    def _refresh_state(self) -> None:
+        try:
+            state = read_state(self.root)
+        except SystemExit:
+            return
+
+        stale = check_stale_workers(state)
+        if stale:
+            write_state(state, self.root)
+
+        self._state = state
+
+        # Update status bar
+        status_bar = self.query_one(StatusBar)
+        status_bar.update_from_state(state)
+
+        # Update table
+        table = self.query_one(WorktreeTable)
+        table.clear()
+
+        for wt in state.worktrees:
+            status_text = _status_styled(wt.status)
+            task_text = wt.task or "—"
+            if len(task_text) > 40:
+                task_text = task_text[:37] + "..."
+            elapsed = _elapsed(wt.started_at) if wt.started_at else "—"
+            table.add_row(wt.id, Text.from_markup(status_text), task_text, elapsed, key=wt.id)
+
+        # If we have a selection, update detail + log
+        if self._selected_wt_id:
+            wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
+            self.query_one(DetailPanel).update_from_worktree(wt)
+            self._update_log_header(wt)
+            self._tail_log(wt)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.row_key and event.row_key.value:
+            self._selected_wt_id = str(event.row_key.value)
+            self._last_log_size = 0  # Reset log on selection change
+
+            log_viewer = self.query_one(LogViewer)
+            log_viewer.clear()
+
+            if self._state:
+                wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+                self.query_one(DetailPanel).update_from_worktree(wt)
+                self._update_log_header(wt)
+                self._tail_log(wt)
+
+    def _update_log_header(self, wt: Worktree | None) -> None:
+        header = self.query_one("#log-header", Static)
+        if wt and wt.log_path:
+            header.update(f" [dim]live log[/dim] · [bold]{wt.id}[/bold] · {wt.tmux_session or ''}")
+        else:
+            header.update(" [dim]no log selected[/dim]")
+
+    def _tail_log(self, wt: Worktree | None) -> None:
+        if not wt or not wt.log_path:
+            return
+
+        log_path = Path(wt.log_path)
+        if not log_path.exists():
+            return
+
+        log_viewer = self.query_one(LogViewer)
+
+        try:
+            size = log_path.stat().st_size
+            if size == self._last_log_size:
+                return
+
+            with open(log_path, "r") as f:
+                if self._last_log_size > 0:
+                    f.seek(self._last_log_size)
+                new_content = f.read()
+                self._last_log_size = size
+
+            for line in new_content.splitlines():
+                log_viewer.write(line)
+
+        except Exception:
+            pass
+
+    def action_attach(self) -> None:
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt or not wt.tmux_session:
+            self.notify("No tmux session for this worktree", severity="warning")
+            return
+
+        self.app.suspend()
+        try:
+            os.execvp("tmux", ["tmux", "attach-session", "-t", wt.tmux_session])
+        except Exception as e:
+            self.notify(f"Failed to attach: {e}", severity="error")
+
+    def action_stop(self) -> None:
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt or wt.status not in ("busy", "error"):
+            self.notify(f"{self._selected_wt_id} is not running", severity="warning")
+            return
+
+        kill_agent(wt.pid, wt.tmux_session)
+        self.notify(f"Stopped {self._selected_wt_id}")
+
+    def action_release(self) -> None:
+        if not self._selected_wt_id:
+            return
+        from lane.cli import _do_release
+        try:
+            _do_release(self.root, self._selected_wt_id, quiet=True)
+            self.notify(f"Released {self._selected_wt_id}")
+        except Exception as e:
+            self.notify(f"Release failed: {e}", severity="error")
+
+    def action_new_task(self) -> None:
+        self.notify("Use `lane task <description>` from another terminal", severity="information")
+
+
+def _elapsed(started_at: str | None) -> str:
+    if not started_at:
+        return "—"
+    try:
+        start = datetime.fromisoformat(started_at)
+        delta = datetime.now(timezone.utc) - start
+        total_seconds = int(delta.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    except Exception:
+        return "—"
+
+
+def _status_styled(status: str) -> str:
+    colors = {
+        "idle": "[green]IDLE[/green]",
+        "busy": "[blue]BUSY[/blue]",
+        "claiming": "[yellow]CLAIM[/yellow]",
+        "releasing": "[yellow]RELEASE[/yellow]",
+        "error": "[red]ERROR[/red]",
+    }
+    return colors.get(status, status)

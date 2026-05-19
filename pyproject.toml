@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lane"
+version = "0.1.0"
+description = "A worktree pool manager for parallel AI coding agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["cli", "git", "worktree", "ai", "agents", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "textual>=0.80",
+]
+
+[project.scripts]
+lane = "lane.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/wilfsteward/lane"
+Repository = "https://github.com/wilfsteward/lane"
+Issues = "https://github.com/wilfsteward/lane/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lane"]
+
+[tool.hatch.build]
+include = ["src/lane/**", "src/lane/data/wrapper.sh"]
