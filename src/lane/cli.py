@@ -47,6 +47,9 @@ def init(
         console.print("[yellow]Pool already initialised.[/yellow] Run [bold]lane destroy[/bold] first to reinitialise.")
         raise typer.Exit(1)
 
+    # Ensure tmux is available
+    _ensure_tmux()
+
     # Verify base branch exists
     console.print(f"Fetching from {remote}...")
     git_ops.fetch(remote, cwd=root)
@@ -410,6 +413,26 @@ def version():
 
 
 # ── helpers ─────────────────────────────────────────────────────
+
+def _ensure_tmux() -> None:
+    """Check for tmux and offer to install it if missing."""
+    if tmux_available():
+        return
+
+    import shutil
+    if shutil.which("brew"):
+        console.print("[yellow]tmux not found.[/yellow] tmux is required for attach/detach.")
+        if typer.confirm("Install tmux via Homebrew?", default=True):
+            console.print("Installing tmux...")
+            subprocess.run(["brew", "install", "tmux"], check=True)
+            if tmux_available():
+                console.print("[green]tmux installed.[/green]")
+                return
+
+    if not tmux_available():
+        console.print("[yellow]tmux not found — attach/detach will be unavailable.[/yellow]")
+        console.print("Install it manually: [bold]brew install tmux[/bold] (macOS) or [bold]apt install tmux[/bold] (Linux)")
+
 
 def _find_worktree(state: PoolState, wt_id: str) -> Worktree:
     for wt in state.worktrees:
