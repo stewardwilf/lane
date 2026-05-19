@@ -66,34 +66,9 @@ class DetailPanel(Static):
         self.update("\n".join(lines))
 
 
-class TerminalPane(Static):
-    """Right pane — shows live tmux capture-pane output (what Claude actually looks like)."""
-
-    DEFAULT_CSS = """
-    TerminalPane {
-        height: 1fr;
-        padding: 0 1;
-        overflow-y: auto;
-    }
-    """
-
-    _last_content: str = ""
-
-    def refresh_from_tmux(self, session_name: str | None) -> None:
-        if not session_name:
-            if self._last_content:
-                return  # Keep showing the last output
-            self.update("[dim]Select a busy worktree to see agent output[/dim]")
-            return
-
-        content = _capture_tmux_pane(session_name)
-        if content is not None:
-            self._last_content = content
-            self.update(content)
-
-    def clear_content(self) -> None:
-        self._last_content = ""
-        self.update("")
+class OutputPane(RichLog):
+    """Right pane — shows live agent output."""
+    pass
 
 
 class TaskInputScreen(ModalScreen[str | None]):
@@ -155,7 +130,7 @@ class LaneDashboard(App):
         background: $surface;
         border-bottom: solid $primary-background;
     }
-    TerminalPane { height: 1fr; padding: 0 1; }
+    OutputPane { height: 1fr; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -171,11 +146,13 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
+    _log_offsets: dict[str, int]  # track per-worktree log read position
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
         self.root = root
         self._table_initialized = False
+        self._log_offsets = {}
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
@@ -185,7 +162,7 @@ class LaneDashboard(App):
                 yield DetailPanel(id="detail")
             with Vertical(id="right"):
                 yield Static("", id="pane-header")
-                yield TerminalPane(id="term-pane")
+                yield OutputPane(id="output-pane", highlight=True, markup=True, max_lines=5000)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -238,31 +215,34 @@ class LaneDashboard(App):
                             pass
                     return
 
-        # Update right pane — live tmux capture for selected worktree
+        # Tail the selected worktree's log
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
             self._update_pane_header(wt)
-            term = self.query_one(TerminalPane)
-            if wt and wt.tmux_session:
-                term.refresh_from_tmux(wt.tmux_session)
-            elif wt and wt.log_path:
-                # Fallback: show log content for finished tasks
-                term.refresh_from_tmux(None)
+            self._tail_output(wt)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key and event.row_key.value:
-            self._selected_wt_id = str(event.row_key.value)
-            self.query_one(TerminalPane).clear_content()
+            new_id = str(event.row_key.value)
+            if new_id == self._selected_wt_id:
+                return
 
+            self._selected_wt_id = new_id
+            pane = self.query_one(OutputPane)
+            pane.clear()
+
+            # Load full log history for this worktree
             if self._state:
-                wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+                wt = next((w for w in self._state.worktrees if w.id == new_id), None)
                 self.query_one(DetailPanel).update_from_worktree(wt)
                 self._update_pane_header(wt)
+                if wt and wt.log_path:
+                    self._load_full_log(wt)
 
     def _update_pane_header(self, wt: Worktree | None) -> None:
         header = self.query_one("#pane-header", Static)
-        if wt and wt.tmux_session and wt.status == "busy":
+        if wt and wt.status == "busy":
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]a[/bold] to interact[/dim]")
         elif wt and wt.status == "idle":
             header.update(f" [bold]{wt.id}[/bold] [dim]· idle[/dim]")
@@ -270,6 +250,53 @@ class LaneDashboard(App):
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
         else:
             header.update(" [dim]select a worktree[/dim]")
+
+    def _load_full_log(self, wt: Worktree) -> None:
+        """Load the entire log file into the output pane on selection change."""
+        if not wt.log_path:
+            return
+        log_path = Path(wt.log_path)
+        if not log_path.exists():
+            return
+
+        pane = self.query_one(OutputPane)
+        try:
+            content = log_path.read_text()
+            self._log_offsets[wt.id] = len(content)
+            for line in content.splitlines():
+                if line.strip():
+                    pane.write(line)
+        except Exception:
+            pass
+
+    def _tail_output(self, wt: Worktree | None) -> None:
+        """Append new log lines since last read."""
+        if not wt or not wt.log_path:
+            return
+
+        log_path = Path(wt.log_path)
+        if not log_path.exists():
+            return
+
+        pane = self.query_one(OutputPane)
+        offset = self._log_offsets.get(wt.id, 0)
+
+        try:
+            size = log_path.stat().st_size
+            if size <= offset:
+                return
+
+            with open(log_path, "r") as f:
+                f.seek(offset)
+                new_content = f.read()
+                self._log_offsets[wt.id] = size
+
+            for line in new_content.splitlines():
+                if line.strip():
+                    pane.write(line)
+
+        except Exception:
+            pass
 
     # ── Actions ─────────────────────────────────────────────────
 
@@ -298,7 +325,9 @@ class LaneDashboard(App):
 
     def _select_worktree(self, wt_id: str) -> None:
         self._selected_wt_id = wt_id
-        self.query_one(TerminalPane).clear_content()
+        pane = self.query_one(OutputPane)
+        pane.clear()
+        self._log_offsets[wt_id] = 0
         if self._state:
             table = self.query_one(WorktreeTable)
             try:
@@ -349,23 +378,6 @@ class LaneDashboard(App):
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
 
         Thread(target=_release, daemon=True).start()
-
-
-def _capture_tmux_pane(session_name: str) -> str | None:
-    """Capture the current visible content of a tmux pane."""
-    try:
-        r = subprocess.run(
-            ["tmux", "capture-pane", "-t", session_name, "-p", "-e"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-        if r.returncode == 0:
-            return r.stdout
-    except Exception:
-        pass
-    return None
 
 
 def _task_text(wt: Worktree) -> str:
