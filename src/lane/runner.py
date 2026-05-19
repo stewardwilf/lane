@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -28,11 +29,11 @@ def spawn_tmux(
     Returns the PID of the tmux server process for the session.
     """
     wrapper = Path(__file__).parent / "data" / "wrapper.sh"
-    lane_bin = shutil.which("lane") or "lane"
+    python_bin = sys.executable
 
     # Build the full command that tmux will run
     # The wrapper script handles: running the agent, logging, and auto-release
-    cmd_parts = [str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd + [task]
+    cmd_parts = [str(wrapper), wt_id, wt_path, log_path, str(root), python_bin] + agent_cmd + [task]
     shell_cmd = " ".join(_shell_quote(p) for p in cmd_parts)
 
     subprocess.run(
@@ -65,7 +66,7 @@ def spawn_subprocess(
 ) -> int:
     """Spawn an agent as a detached subprocess (no tmux). Returns PID."""
     wrapper = Path(__file__).parent / "data" / "wrapper.sh"
-    lane_bin = shutil.which("lane") or "lane"
+    python_bin = sys.executable
 
     cmd = ["bash", str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd + [task]
 
