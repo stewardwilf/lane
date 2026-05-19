@@ -16,7 +16,7 @@ from textual.timer import Timer
 from textual.widgets import Footer, Static, RichLog, DataTable, Input, Label
 
 from lane.state import read_state, PoolState, Worktree, write_state
-from lane.recovery import check_stale_workers
+from lane.recovery import check_stale_workers, auto_recover
 from lane.runner import kill_agent
 
 
@@ -218,9 +218,10 @@ class LaneDashboard(App):
         except SystemExit:
             return
 
-        stale = check_stale_workers(state)
+        stale = check_stale_workers(state, self.root)
         if stale:
-            write_state(state, self.root)
+            # Auto-release dead worktrees in a thread so we don't block the UI
+            auto_recover(self.root, stale)
 
         self._state = state
 

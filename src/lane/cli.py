@@ -266,9 +266,10 @@ def status(
 
     while True:
         state = read_state(root)
-        stale = check_stale_workers(state)
+        stale = check_stale_workers(state, root)
         if stale:
-            write_state(state, root)
+            from lane.recovery import auto_recover
+            auto_recover(root, stale)
 
         if fmt == "json":
             console.print_json(json_mod.dumps(state.to_dict()))
