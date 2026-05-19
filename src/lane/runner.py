@@ -120,6 +120,18 @@ def is_pid_alive(pid: int) -> bool:
         return True  # Alive but owned by another user
 
 
+def is_tmux_session_alive(session_name: str) -> bool:
+    """Check if a tmux session exists."""
+    if not session_name:
+        return False
+    r = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+        check=False,
+    )
+    return r.returncode == 0
+
+
 def _shell_quote(s: str) -> str:
     """Simple shell quoting."""
     if not s:
