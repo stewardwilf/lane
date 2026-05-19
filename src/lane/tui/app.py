@@ -82,6 +82,17 @@ class OutputPane(RichLog):
         self.write(Text.from_ansi(line))
 
 
+class ReplyInput(Input):
+    """Input bar for sending messages to the running Claude session."""
+
+    DEFAULT_CSS = """
+    ReplyInput {
+        dock: bottom;
+        margin: 0 0;
+    }
+    """
+
+
 class TaskInputScreen(ModalScreen[str | None]):
     CSS = """
     TaskInputScreen { align: center middle; }
@@ -150,15 +161,27 @@ class LaneDashboard(App):
         border-bottom: solid $primary-background;
     }
     OutputPane { height: 1fr; padding: 0 1; }
+    #reply-bar {
+        height: auto;
+        border-top: solid $primary-background;
+        background: $surface;
+        padding: 0 1;
+    }
+    #reply-hint {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
-        Binding("a", "attach", "Attach", show=True),
-        Binding("c", "continue_task", "Continue", show=True),
-        Binding("s", "stop", "Stop", show=True),
-        Binding("r", "release", "Release", show=True),
-        Binding("n", "new_task", "New task", show=True),
-        Binding("q", "quit", "Quit", show=True),
+        Binding("a", "attach", "Attach", show=True, priority=True),
+        Binding("c", "continue_task", "Continue", show=True, priority=True),
+        Binding("s", "stop", "Stop", show=True, priority=True),
+        Binding("r", "release", "Release", show=True, priority=True),
+        Binding("n", "new_task", "New task", show=True, priority=True),
+        Binding("slash", "focus_reply", "/Reply", show=True, priority=True),
+        Binding("q", "quit", "Quit", show=True, priority=True),
     ]
 
     root: Path
@@ -185,11 +208,73 @@ class LaneDashboard(App):
             with Vertical(id="right"):
                 yield Static("", id="pane-header")
                 yield OutputPane(id="output-pane", highlight=True, markup=True, max_lines=5000)
+                with Vertical(id="reply-bar"):
+                    yield Static("[dim]/ to reply · sends to selected worktree's Claude session[/dim]", id="reply-hint")
+                    yield ReplyInput(placeholder="Type a message to Claude...", id="reply-input")
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_state()
         self._poll_timer = self.set_interval(0.5, self._refresh_state)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter in the reply input."""
+        if event.input.id != "reply-input":
+            return
+
+        message = event.value.strip()
+        event.input.value = ""
+
+        if not message:
+            # Refocus the table so keybinds work again
+            self.query_one(WorktreeTable).focus()
+            return
+
+        if not self._selected_wt_id or not self._state:
+            self.notify("No worktree selected", severity="warning")
+            self.query_one(WorktreeTable).focus()
+            return
+
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt:
+            self.query_one(WorktreeTable).focus()
+            return
+
+        if wt.status == "busy" and wt.tmux_session:
+            # Send to running Claude session
+            _send_to_tmux(wt.tmux_session, message)
+            self.notify(f"Sent to {wt.id}", timeout=2)
+        elif wt.status == "done":
+            # Start a new Claude session with this as the prompt
+            self.notify(f"Continuing {wt.id}...", timeout=2)
+            def _cont():
+                try:
+                    from lane.cli import _continue_worktree
+                    _, err = _continue_worktree(self.root, wt.id, message)
+                    if err:
+                        self.call_from_thread(self.notify, f"Failed: {err}", severity="error")
+                    else:
+                        self.call_from_thread(self.notify, f"Resumed {wt.id}")
+                except Exception as e:
+                    self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+            Thread(target=_cont, daemon=True).start()
+        elif wt.status == "idle":
+            # Dispatch as a new task
+            self.notify(f"Dispatching to {wt.id}...", timeout=2)
+            def _dispatch():
+                try:
+                    from lane.cli import dispatch_task_headless
+                    wt_id, err = dispatch_task_headless(self.root, message)
+                    if err:
+                        self.call_from_thread(self.notify, f"Failed: {err}", severity="error")
+                    else:
+                        self.call_from_thread(self.notify, f"Dispatched to {wt_id}")
+                        self.call_from_thread(self._select_worktree, wt_id)
+                except Exception as e:
+                    self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+            Thread(target=_dispatch, daemon=True).start()
+
+        self.query_one(WorktreeTable).focus()
 
     def _refresh_state(self) -> None:
         try:
@@ -230,6 +315,7 @@ class LaneDashboard(App):
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
             self._update_pane_header(wt)
+            self._update_reply_hint(wt)
             self._tail_output(wt)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -246,6 +332,7 @@ class LaneDashboard(App):
                 wt = next((w for w in self._state.worktrees if w.id == new_id), None)
                 self.query_one(DetailPanel).update_from_worktree(wt)
                 self._update_pane_header(wt)
+                self._update_reply_hint(wt)
                 if wt and wt.log_path:
                     self._load_full_log(wt)
 
@@ -254,13 +341,22 @@ class LaneDashboard(App):
         if not wt:
             header.update(" [dim]select a worktree[/dim]")
         elif wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]a[/bold] to interact[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach · [bold]/[/bold] reply[/dim]")
         elif wt.status == "done":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]c[/bold] to continue · [bold]r[/bold] to release[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]/[/bold] continue · [bold]r[/bold] release[/dim]")
         elif wt.status == "idle":
-            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · press [bold]n[/bold] to dispatch[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · [bold]/[/bold] or [bold]n[/bold] to dispatch[/dim]")
         else:
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
+
+    def _update_reply_hint(self, wt: Worktree | None) -> None:
+        hint = self.query_one("#reply-hint", Static)
+        if not wt or wt.status == "idle":
+            hint.update("[dim]/ to type · dispatches a new task[/dim]")
+        elif wt.status == "busy":
+            hint.update(f"[dim]/ to reply · sends to [bold]{wt.id}[/bold] Claude session[/dim]")
+        elif wt.status == "done":
+            hint.update(f"[dim]/ to continue · starts new Claude session in [bold]{wt.id}[/bold][/dim]")
 
     def _load_full_log(self, wt: Worktree) -> None:
         if not wt.log_path:
@@ -308,6 +404,9 @@ class LaneDashboard(App):
 
     # ── Actions ─────────────────────────────────────────────────
 
+    def action_focus_reply(self) -> None:
+        self.query_one("#reply-input", ReplyInput).focus()
+
     def action_new_task(self) -> None:
         self.push_screen(
             TaskInputScreen("New task", "Describe the work for Claude"),
@@ -341,10 +440,10 @@ class LaneDashboard(App):
         if not wt:
             return
         if wt.status == "busy":
-            self.notify("Already running — press a to attach", severity="warning")
+            self.notify("Already running — press a to attach, or / to reply", severity="warning")
             return
         if wt.status == "idle":
-            self.notify("Idle — press n to dispatch a new task", severity="warning")
+            self.notify("Idle — press n or / to dispatch", severity="warning")
             return
 
         self.push_screen(
@@ -390,7 +489,7 @@ class LaneDashboard(App):
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if not wt or not wt.tmux_session:
-            self.notify("No running session — press c to continue", severity="warning")
+            self.notify("No running session — press c to continue or / to reply", severity="warning")
             return
         if wt.status != "busy":
             self.notify(f"{wt.id} is not running", severity="warning")
@@ -418,7 +517,7 @@ class LaneDashboard(App):
             self.notify(f"{self._selected_wt_id} is already idle", severity="warning")
             return
         if wt and wt.status == "busy":
-            self.notify("Stop the agent first (s), or detach and release", severity="warning")
+            self.notify("Stop the agent first (s)", severity="warning")
             return
 
         def _release():
@@ -430,6 +529,15 @@ class LaneDashboard(App):
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
 
         Thread(target=_release, daemon=True).start()
+
+
+def _send_to_tmux(session_name: str, text: str) -> None:
+    """Send keystrokes to a tmux session."""
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, text, "Enter"],
+        capture_output=True,
+        check=False,
+    )
 
 
 def _task_text(wt: Worktree) -> str:
