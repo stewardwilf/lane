@@ -67,8 +67,11 @@ class DetailPanel(Static):
 
 
 class OutputPane(RichLog):
-    """Right pane — shows live agent output."""
-    pass
+    """Right pane — shows live agent output with ANSI rendering."""
+
+    def write_ansi(self, line: str) -> None:
+        """Write a line, interpreting ANSI escape codes."""
+        self.write(Text.from_ansi(line))
 
 
 class TaskInputScreen(ModalScreen[str | None]):
@@ -265,7 +268,7 @@ class LaneDashboard(App):
             self._log_offsets[wt.id] = len(content)
             for line in content.splitlines():
                 if line.strip():
-                    pane.write(line)
+                    pane.write_ansi(line)
         except Exception:
             pass
 
@@ -293,7 +296,7 @@ class LaneDashboard(App):
 
             for line in new_content.splitlines():
                 if line.strip():
-                    pane.write(line)
+                    pane.write_ansi(line)
 
         except Exception:
             pass
