@@ -23,7 +23,10 @@ class WorktreeTable(DataTable):
     """Left-pane table of worktree slots."""
 
     def on_mount(self) -> None:
-        self.add_columns("ID", "Status", "Task", "Elapsed")
+        self.add_column("ID", key="id")
+        self.add_column("Status", key="status")
+        self.add_column("Task", key="task")
+        self.add_column("Elapsed", key="elapsed")
         self.cursor_type = "row"
         self.zebra_stripes = True
 
@@ -192,15 +195,22 @@ class LaneDashboard(App):
         else:
             for wt in state.worktrees:
                 try:
-                    row_key = table.get_row(wt.id)  # raises if missing
-                    table.update_cell(wt.id, "Status", Text.from_markup(_status_styled(wt.status)))
-                    table.update_cell(wt.id, "Task", _task_text(wt))
-                    table.update_cell(wt.id, "Elapsed", _elapsed(wt.started_at) if wt.started_at else "—")
+                    table.get_row(wt.id)  # raises if missing
+                    table.update_cell(wt.id, "status", Text.from_markup(_status_styled(wt.status)), update_width=False)
+                    table.update_cell(wt.id, "task", _task_text(wt), update_width=False)
+                    table.update_cell(wt.id, "elapsed", _elapsed(wt.started_at) if wt.started_at else "—", update_width=False)
                 except Exception:
                     # Row was removed or pool resized — rebuild
+                    prev_selected = self._selected_wt_id
                     table.clear()
                     self._table_initialized = False
                     self._refresh_state()
+                    if prev_selected:
+                        try:
+                            idx = next(i for i, w in enumerate(state.worktrees) if w.id == prev_selected)
+                            table.move_cursor(row=idx)
+                        except (StopIteration, Exception):
+                            pass
                     return
 
         # Update detail + log for selected worktree
