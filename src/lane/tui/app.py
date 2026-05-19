@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,10 +77,13 @@ class DetailPanel(Static):
 
 
 class OutputPane(RichLog):
-    """Right pane — shows live agent output with ANSI rendering."""
+    """Right pane — shows live agent output."""
 
-    def write_ansi(self, line: str) -> None:
-        self.write(Text.from_ansi(line))
+    def write_clean(self, line: str) -> None:
+        """Write a line, stripping terminal control sequences."""
+        cleaned = _strip_terminal_codes(line)
+        if cleaned.strip():
+            self.write(Text.from_ansi(cleaned))
 
 
 class ReplyInput(Input):
@@ -371,7 +375,7 @@ class LaneDashboard(App):
             self._log_offsets[wt.id] = len(content)
             for line in content.splitlines():
                 if line.strip():
-                    pane.write_ansi(line)
+                    pane.write_clean(line)
         except Exception:
             pass
 
@@ -398,7 +402,7 @@ class LaneDashboard(App):
 
             for line in new_content.splitlines():
                 if line.strip():
-                    pane.write_ansi(line)
+                    pane.write_clean(line)
         except Exception:
             pass
 
@@ -557,6 +561,25 @@ def _elapsed(started_at: str | None) -> str:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     except Exception:
         return "—"
+
+
+def _strip_terminal_codes(text: str) -> str:
+    """Strip terminal control sequences, keeping only readable text + basic ANSI colors."""
+    # OSC sequences: \e]...BEL or \e]...ST
+    text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
+    # CSI sequences that aren't SGR (colors): cursor movement, clear, scroll, etc.
+    # Keep SGR (ending in 'm') for color rendering
+    text = re.sub(r'\x1b\[[0-9;]*[A-HJKSTfhlnr]', '', text)
+    # DEC private modes: \e[?...h \e[?...l
+    text = re.sub(r'\x1b\[\?[0-9;]*[hl]', '', text)
+    # Other escape sequences
+    text = re.sub(r'\x1b[()][AB012]', '', text)
+    text = re.sub(r'\x1b[78DEHM]', '', text)
+    # Carriage returns (overwrite artifacts)
+    text = re.sub(r'\r', '', text)
+    # Stray control characters (except newline, tab)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]', '', text)
+    return text
 
 
 def _status_styled(status: str) -> str:
