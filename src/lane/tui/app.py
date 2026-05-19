@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
@@ -17,12 +18,10 @@ from textual.widgets import Footer, Static, RichLog, DataTable, Input, Label
 
 from lane.state import read_state, PoolState, Worktree, write_state
 from lane.recovery import check_stale_workers, auto_recover
-from lane.runner import kill_agent
+from lane.runner import kill_agent, is_tmux_session_alive
 
 
 class WorktreeTable(DataTable):
-    """Left-pane table of worktree slots."""
-
     def on_mount(self) -> None:
         self.add_column("ID", key="id", width=8)
         self.add_column("Status", key="status", width=10)
@@ -32,14 +31,7 @@ class WorktreeTable(DataTable):
         self.zebra_stripes = True
 
 
-class LogViewer(RichLog):
-    """Right-pane log viewer."""
-    pass
-
-
 class StatusBar(Static):
-    """Top status bar showing pool summary."""
-
     def update_from_state(self, state: PoolState) -> None:
         busy = sum(1 for w in state.worktrees if w.status == "busy")
         idle = sum(1 for w in state.worktrees if w.status == "idle")
@@ -58,8 +50,6 @@ class StatusBar(Static):
 
 
 class DetailPanel(Static):
-    """Bottom-left detail panel for selected worktree."""
-
     def update_from_worktree(self, wt: Worktree | None) -> None:
         if wt is None:
             self.update("No worktree selected")
@@ -70,43 +60,55 @@ class DetailPanel(Static):
             f"[dim]selected[/dim] · [bold]{wt.id}[/bold]",
             f"[dim]branch[/dim]   {wt.branch or '—'}",
             f"[dim]task[/dim]     {wt.task or '—'}",
-            f"[dim]task_id[/dim]  {wt.task_id or '—'}",
             f"[dim]status[/dim]   {_status_styled(wt.status)}",
             f"[dim]elapsed[/dim]  {elapsed}",
-            f"[dim]pid[/dim]      {wt.pid or '—'}",
-            f"[dim]tmux[/dim]     {wt.tmux_session or '—'}",
         ]
         self.update("\n".join(lines))
 
 
-# ── Task input modal ────────────────────────────────────────────
+class TerminalPane(Static):
+    """Right pane — shows live tmux capture-pane output (what Claude actually looks like)."""
 
-class TaskInputScreen(ModalScreen[str | None]):
-    """Modal for entering a new task description."""
-
-    CSS = """
-    TaskInputScreen {
-        align: center middle;
-    }
-    #task-dialog {
-        width: 70;
-        height: auto;
-        max-height: 12;
-        padding: 1 2;
-        background: $surface;
-        border: thick $primary-background;
-    }
-    #task-label {
-        margin-bottom: 1;
-    }
-    #task-input {
-        width: 100%;
+    DEFAULT_CSS = """
+    TerminalPane {
+        height: 1fr;
+        padding: 0 1;
+        overflow-y: auto;
     }
     """
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-    ]
+    _last_content: str = ""
+
+    def refresh_from_tmux(self, session_name: str | None) -> None:
+        if not session_name:
+            if self._last_content:
+                return  # Keep showing the last output
+            self.update("[dim]Select a busy worktree to see agent output[/dim]")
+            return
+
+        content = _capture_tmux_pane(session_name)
+        if content is not None:
+            self._last_content = content
+            self.update(content)
+
+    def clear_content(self) -> None:
+        self._last_content = ""
+        self.update("")
+
+
+class TaskInputScreen(ModalScreen[str | None]):
+    CSS = """
+    TaskInputScreen { align: center middle; }
+    #task-dialog {
+        width: 70; height: auto; max-height: 12;
+        padding: 1 2; background: $surface;
+        border: thick $primary-background;
+    }
+    #task-label { margin-bottom: 1; }
+    #task-input { width: 100%; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="task-dialog"):
@@ -124,57 +126,36 @@ class TaskInputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-# ── Main dashboard ──────────────────────────────────────────────
-
 class LaneDashboard(App):
-    """The lane TUI dashboard."""
-
     TITLE = "lane dashboard"
 
     CSS = """
-    Screen {
-        layout: vertical;
-    }
+    Screen { layout: vertical; }
     StatusBar {
-        height: 3;
-        padding: 1 2;
+        height: 3; padding: 1 2;
         background: $surface;
         border-bottom: solid $primary-background;
     }
-    #main {
-        layout: horizontal;
-        height: 1fr;
-    }
+    #main { layout: horizontal; height: 1fr; }
     #left {
-        width: 1fr;
-        max-width: 64;
+        width: 1fr; max-width: 64;
         border-right: solid $primary-background;
         layout: vertical;
     }
-    WorktreeTable {
-        height: 1fr;
-    }
+    WorktreeTable { height: 1fr; }
     DetailPanel {
-        height: auto;
-        max-height: 12;
+        height: auto; max-height: 8;
         padding: 1 2;
         border-top: solid $primary-background;
         background: $surface;
     }
-    #right {
-        width: 2fr;
-        layout: vertical;
-    }
-    #log-header {
-        height: 3;
-        padding: 1 2;
+    #right { width: 2fr; layout: vertical; }
+    #pane-header {
+        height: 3; padding: 1 2;
         background: $surface;
         border-bottom: solid $primary-background;
     }
-    LogViewer {
-        height: 1fr;
-        padding: 0 1;
-    }
+    TerminalPane { height: 1fr; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -188,7 +169,6 @@ class LaneDashboard(App):
     root: Path
     _poll_timer: Timer | None = None
     _selected_wt_id: str | None = None
-    _last_log_size: int = 0
     _state: PoolState | None = None
     _table_initialized: bool = False
 
@@ -204,8 +184,8 @@ class LaneDashboard(App):
                 yield WorktreeTable()
                 yield DetailPanel(id="detail")
             with Vertical(id="right"):
-                yield Static("", id="log-header")
-                yield LogViewer(id="log-viewer", highlight=True, markup=True)
+                yield Static("", id="pane-header")
+                yield TerminalPane(id="term-pane")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -220,15 +200,12 @@ class LaneDashboard(App):
 
         stale = check_stale_workers(state, self.root)
         if stale:
-            # Auto-release dead worktrees in a thread so we don't block the UI
-            auto_recover(self.root, stale)
+            Thread(target=auto_recover, args=(self.root, stale), daemon=True).start()
 
         self._state = state
 
-        # Update status bar
         self.query_one(StatusBar).update_from_state(state)
 
-        # Update table — populate once, then update cells in place
         table = self.query_one(WorktreeTable)
 
         if not self._table_initialized:
@@ -261,60 +238,38 @@ class LaneDashboard(App):
                             pass
                     return
 
-        # Update detail + log for selected worktree
+        # Update right pane — live tmux capture for selected worktree
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
-            self._update_log_header(wt)
-            self._tail_log(wt)
+            self._update_pane_header(wt)
+            term = self.query_one(TerminalPane)
+            if wt and wt.tmux_session:
+                term.refresh_from_tmux(wt.tmux_session)
+            elif wt and wt.log_path:
+                # Fallback: show log content for finished tasks
+                term.refresh_from_tmux(None)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key and event.row_key.value:
             self._selected_wt_id = str(event.row_key.value)
-            self._last_log_size = 0
-
-            log_viewer = self.query_one(LogViewer)
-            log_viewer.clear()
+            self.query_one(TerminalPane).clear_content()
 
             if self._state:
                 wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
                 self.query_one(DetailPanel).update_from_worktree(wt)
-                self._update_log_header(wt)
-                self._tail_log(wt)
+                self._update_pane_header(wt)
 
-    def _update_log_header(self, wt: Worktree | None) -> None:
-        header = self.query_one("#log-header", Static)
-        if wt and wt.log_path:
-            header.update(f" [dim]live log[/dim] · [bold]{wt.id}[/bold] · {wt.tmux_session or ''}")
+    def _update_pane_header(self, wt: Worktree | None) -> None:
+        header = self.query_one("#pane-header", Static)
+        if wt and wt.tmux_session and wt.status == "busy":
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]a[/bold] to interact[/dim]")
+        elif wt and wt.status == "idle":
+            header.update(f" [bold]{wt.id}[/bold] [dim]· idle[/dim]")
+        elif wt:
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
         else:
-            header.update(" [dim]no log selected[/dim]")
-
-    def _tail_log(self, wt: Worktree | None) -> None:
-        if not wt or not wt.log_path:
-            return
-
-        log_path = Path(wt.log_path)
-        if not log_path.exists():
-            return
-
-        log_viewer = self.query_one(LogViewer)
-
-        try:
-            size = log_path.stat().st_size
-            if size == self._last_log_size:
-                return
-
-            with open(log_path, "r") as f:
-                if self._last_log_size > 0:
-                    f.seek(self._last_log_size)
-                new_content = f.read()
-                self._last_log_size = size
-
-            for line in new_content.splitlines():
-                log_viewer.write(line)
-
-        except Exception:
-            pass
+            header.update(" [dim]select a worktree[/dim]")
 
     # ── Actions ─────────────────────────────────────────────────
 
@@ -327,7 +282,6 @@ class LaneDashboard(App):
 
         self.notify(f"Dispatching: {description}...", timeout=3)
 
-        # Run dispatch in a thread so it doesn't block the UI
         def _dispatch():
             try:
                 from lane.cli import dispatch_task_headless
@@ -344,10 +298,7 @@ class LaneDashboard(App):
 
     def _select_worktree(self, wt_id: str) -> None:
         self._selected_wt_id = wt_id
-        self._last_log_size = 0
-        log_viewer = self.query_one(LogViewer)
-        log_viewer.clear()
-        # Move cursor to the worktree
+        self.query_one(TerminalPane).clear_content()
         if self._state:
             table = self.query_one(WorktreeTable)
             try:
@@ -363,7 +314,7 @@ class LaneDashboard(App):
         if not wt or not wt.tmux_session:
             self.notify("No tmux session for this worktree", severity="warning")
             return
-        if wt.status not in ("busy",):
+        if wt.status != "busy":
             self.notify(f"{wt.id} is not running", severity="warning")
             return
 
@@ -400,6 +351,23 @@ class LaneDashboard(App):
         Thread(target=_release, daemon=True).start()
 
 
+def _capture_tmux_pane(session_name: str) -> str | None:
+    """Capture the current visible content of a tmux pane."""
+    try:
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-t", session_name, "-p", "-e"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        if r.returncode == 0:
+            return r.stdout
+    except Exception:
+        pass
+    return None
+
+
 def _task_text(wt: Worktree) -> str:
     t = wt.task or "—"
     return t[:37] + "..." if len(t) > 40 else t
@@ -420,11 +388,10 @@ def _elapsed(started_at: str | None) -> str:
 
 
 def _status_styled(status: str) -> str:
-    colors = {
+    return {
         "idle": "[green]IDLE[/green]",
         "busy": "[blue]BUSY[/blue]",
         "claiming": "[yellow]CLAIM[/yellow]",
         "releasing": "[yellow]RELEASE[/yellow]",
         "error": "[red]ERROR[/red]",
-    }
-    return colors.get(status, status)
+    }.get(status, status)

@@ -6,7 +6,6 @@ import os
 import re
 import secrets
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
@@ -18,7 +17,6 @@ from lane.config import LaneConfig, find_root, lane_dir, LANE_DIR
 from lane.state import PoolState, Worktree, read_state, write_state, with_state_lock, now_iso
 from lane import git_ops
 from lane.runner import tmux_available, spawn_tmux, spawn_subprocess, kill_agent
-from lane.recovery import check_stale_workers
 from lane.recovery import check_stale_workers
 
 app = typer.Typer(
@@ -48,10 +46,8 @@ def init(
         console.print("[yellow]Pool already initialised.[/yellow] Run [bold]lane destroy[/bold] first to reinitialise.")
         raise typer.Exit(1)
 
-    # Ensure tmux is available
     _ensure_tmux()
 
-    # Verify base branch exists
     console.print(f"Fetching from {remote}...")
     git_ops.fetch(remote, cwd=root)
 
@@ -60,7 +56,6 @@ def init(
         console.print(f"[red]Branch {remote_base} not found.[/red]")
         raise typer.Exit(1)
 
-    # Ensure pool dir is in .gitignore
     gitignore = root / ".gitignore"
     ignore_entry = LANE_DIR + "/"
     if gitignore.exists():
@@ -72,12 +67,10 @@ def init(
     else:
         gitignore.write_text(f"{ignore_entry}\n")
 
-    # Create directory structure
     ld.mkdir(parents=True, exist_ok=True)
     (ld / "logs").mkdir(exist_ok=True)
     (ld / "worktrees").mkdir(exist_ok=True)
 
-    # Build config
     cfg = LaneConfig(
         base_branch=base,
         holding_branch=holding,
@@ -95,7 +88,6 @@ def init(
         wt_id = f"wt-{i:02d}"
         wt_rel_path = os.path.join(cfg.pool_dir, wt_id)
         wt_abs_path = str(root / wt_rel_path)
-        # Each worktree needs a unique branch (git requirement)
         wt_branch = f"{holding}/{wt_id}"
 
         console.print(f"  Creating worktree [bold]{wt_id}[/bold]...")
@@ -109,14 +101,12 @@ def init(
             last_released_at=now_iso(),
         ))
 
-    # Run setup script if provided
     if setup_script:
         for wt in worktrees:
             wt_abs = str(root / wt.path)
             console.print(f"  Running setup script in {wt.id}...")
             subprocess.run(["bash", setup_script], cwd=wt_abs, check=False)
 
-    # Write state
     state = PoolState(version=1, config=cfg, worktrees=worktrees)
     write_state(state, root)
 
@@ -138,9 +128,6 @@ def task(
     background: bool = typer.Option(False, "--background", "--bg", help="Dispatch and return immediately."),
 ):
     """Dispatch a task to an idle worktree."""
-    from rich.live import Live
-    from rich.panel import Panel
-    from rich.text import Text
     import time
 
     root = find_root()
@@ -151,8 +138,7 @@ def task(
     slug = _slugify(description)
     branch_name = f"{branch_prefix}{slug}-{task_id}"
 
-    # ── Step 1: Claim ──────────────────────────────────────────
-    _step(f"Claiming idle worktree")
+    _step("Claiming idle worktree")
     claimed_id: str | None = None
     with with_state_lock(root) as state:
         for wt in state.worktrees:
@@ -163,11 +149,10 @@ def task(
 
         if claimed_id is None:
             console.print("[red]  No idle worktrees available.[/red] All slots are busy.")
-            raise typer.Exit(75)  # EX_TEMPFAIL
+            raise typer.Exit(75)
 
     _done(f"Claimed [bold]{claimed_id}[/bold]")
 
-    # ── Step 2: Branch ─────────────────────────────────────────
     claimed_wt = next(w for w in state.worktrees if w.id == claimed_id)
     wt_abs = str(root / claimed_wt.path)
     remote = state.config.remote
@@ -182,19 +167,16 @@ def task(
             for wt in state.worktrees:
                 if wt.id == claimed_id:
                     wt.status = "idle"
-                    wt.branch = state.config.holding_branch
+                    wt.branch = f"{state.config.holding_branch}/{claimed_id}"
                     break
         console.print(f"[red]  Failed:[/red] {e}")
         raise typer.Exit(1)
 
     _done(f"Branch [dim]{branch_name}[/dim]")
 
-    # ── Step 3: Spawn ──────────────────────────────────────────
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
-    # Clear any old log
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
-
     tmux_session = f"lane-{claimed_id}"
 
     with with_state_lock(root) as state:
@@ -239,14 +221,12 @@ def task(
     agent_name = " ".join(state.config.agent_cmd)
     _done(f"Agent running ({agent_name}) · pid {pid}")
 
-    # ── Background mode: print summary and exit ────────────────
     if background:
         console.print(f"\n  [dim]Task ID[/dim]  {task_id}")
         console.print(f"  [dim]Attach[/dim]   lane attach {claimed_id}")
         console.print(f"  [dim]Logs[/dim]     lane logs {claimed_id} -f")
         return
 
-    # ── Live streaming mode (default) ──────────────────────────
     console.print()
     _stream_log(root, claimed_id, log_file, description, branch_name, task_id)
 
@@ -270,6 +250,7 @@ def status(
         if stale:
             from lane.recovery import auto_recover
             auto_recover(root, stale)
+            state = read_state(root)
 
         if fmt == "json":
             console.print_json(json_mod.dumps(state.to_dict()))
@@ -288,8 +269,8 @@ def dashboard():
     """Open the TUI dashboard."""
     from lane.tui.app import LaneDashboard
     root = find_root()
-    app = LaneDashboard(root=root)
-    app.run()
+    dash = LaneDashboard(root=root)
+    dash.run()
 
 
 # ── logs ────────────────────────────────────────────────────────
@@ -359,7 +340,7 @@ def stop(
 
     console.print(f"Stopping agent in [bold]{wt_id}[/bold]...")
     kill_agent(wt.pid, wt.tmux_session)
-    console.print(f"[green]Stopped.[/green] The wrapper script will auto-release the worktree.")
+    console.print("[green]Stopped.[/green]")
 
 
 # ── release ─────────────────────────────────────────────────────
@@ -400,18 +381,15 @@ def destroy(
         console.print(f"[red]{len(busy)} worktree(s) are busy.[/red] Use --force to destroy anyway.")
         raise typer.Exit(1)
 
-    # Kill any running agents
     for wt in state.worktrees:
         if wt.status == "busy" and wt.pid:
             kill_agent(wt.pid, wt.tmux_session)
 
-    # Remove worktrees
     for wt in state.worktrees:
         wt_abs = str(root / wt.path)
         console.print(f"  Removing worktree [bold]{wt.id}[/bold]...")
         git_ops.remove_worktree(wt_abs, cwd=root, force=True)
 
-    # Clean up lane directory
     import shutil
     ld = lane_dir(root)
     if ld.exists():
@@ -431,7 +409,6 @@ def version():
 # ── helpers ─────────────────────────────────────────────────────
 
 def _ensure_tmux() -> None:
-    """Check for tmux and offer to install it if missing."""
     if tmux_available():
         return
 
@@ -458,15 +435,24 @@ def _find_worktree(state: PoolState, wt_id: str) -> Worktree:
     raise typer.Exit(1)
 
 
+def _find_worktree_safe(state: PoolState, wt_id: str) -> Worktree | None:
+    """Find a worktree without raising — for use outside CLI context."""
+    for wt in state.worktrees:
+        if wt.id == wt_id:
+            return wt
+    return None
+
+
 def _do_release(root: Path, wt_id: str, quiet: bool = False) -> None:
     """Perform the full release cycle for a worktree."""
     state = read_state(root)
-    wt = _find_worktree(state, wt_id)
+    wt = _find_worktree_safe(state, wt_id)
+    if wt is None:
+        return
+
     cfg = state.config
 
     if wt.status == "idle":
-        if not quiet:
-            console.print(f"[yellow]{wt_id} is already idle.[/yellow]")
         return
 
     wt_abs = str(root / wt.path)
@@ -477,10 +463,8 @@ def _do_release(root: Path, wt_id: str, quiet: bool = False) -> None:
             task_desc = wt.task or "unknown task"
             git_ops.add_all(cwd=wt_abs)
             git_ops.commit(f"WIP: {task_desc} [lane autosave]", cwd=wt_abs)
-            if not quiet:
-                console.print(f"  Auto-committed WIP changes in {wt_id}.")
     except Exception:
-        pass  # Don't fail release on commit errors
+        pass
 
     # Push if configured
     if cfg.push_on_release and wt.branch:
@@ -489,16 +473,16 @@ def _do_release(root: Path, wt_id: str, quiet: bool = False) -> None:
         except Exception:
             pass
 
-    # Reset to per-worktree holding branch
+    # Reset to per-worktree holding branch (no fetch needed — use local base)
     wt_holding = f"{cfg.holding_branch}/{wt_id}"
     try:
         git_ops.checkout_new_branch(wt_holding, f"{cfg.remote}/{cfg.base_branch}", cwd=wt_abs)
     except Exception:
-        pass  # Best effort
+        pass
 
     # Update state under lock
-    with with_state_lock(root) as state:
-        for w in state.worktrees:
+    with with_state_lock(root) as locked_state:
+        for w in locked_state.worktrees:
             if w.id == wt_id:
                 w.status = "idle"
                 w.branch = wt_holding
@@ -524,6 +508,7 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
     """Stream agent log output live until the task finishes or user hits Ctrl+C."""
     import time
     from rich.rule import Rule
+    from lane.runner import is_tmux_session_alive
 
     log_path = Path(log_file)
     seen = 0
@@ -534,14 +519,13 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
     console.print(f"  [dim]ctrl+c[/dim]  detach (agent keeps running)")
     console.print()
 
+    tmux_session = f"lane-{wt_id}"
+
     try:
         while True:
-            # Check if still running
-            state = read_state(root)
-            wt = next((w for w in state.worktrees if w.id == wt_id), None)
-            finished = wt is None or wt.status not in ("busy", "claiming")
+            # Check if still running via tmux session
+            alive = is_tmux_session_alive(tmux_session)
 
-            # Read new log lines
             if log_path.exists():
                 with open(log_path, "r") as f:
                     f.seek(seen)
@@ -551,13 +535,10 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
                         for line in new.splitlines():
                             _print_log_line(line)
 
-            if finished:
+            if not alive:
                 console.print()
-                if wt and wt.status == "error":
-                    console.print(Rule("[red]agent exited with error[/red]", style="red"))
-                else:
-                    console.print(Rule("[green]task complete[/green]", style="green"))
-                    console.print(f"  [dim]Branch[/dim] [bold]{branch}[/bold] [dim]has the changes.[/dim]")
+                console.print(Rule("[green]task complete[/green]", style="green"))
+                console.print(f"  [dim]Branch[/dim] [bold]{branch}[/bold] [dim]has the changes.[/dim]")
                 break
 
             time.sleep(0.3)
@@ -572,17 +553,14 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
 
 
 def _print_log_line(line: str) -> None:
-    """Print a single log line with contextual styling."""
     stripped = line.strip()
     if not stripped:
         return
 
-    # Lane system messages
     if stripped.startswith("[lane]"):
         console.print(f"  [dim]{stripped}[/dim]")
         return
 
-    # Common agent patterns
     if any(stripped.startswith(p) for p in ("PASS", "✓", "ok ")):
         console.print(f"  [green]{stripped}[/green]")
     elif any(stripped.startswith(p) for p in ("FAIL", "ERROR", "✗", "error:", "Error:")):
@@ -615,7 +593,6 @@ def _print_status_table(state: PoolState) -> None:
         task_str = wt.task or "—"
         branch_str = wt.branch or "—"
         elapsed = _elapsed(wt.started_at) if wt.started_at else "—"
-
         table.add_row(wt.id, status_str, task_str, branch_str, elapsed)
 
     console.print(table)
@@ -623,14 +600,13 @@ def _print_status_table(state: PoolState) -> None:
 
 
 def _status_styled(status: str) -> str:
-    colors = {
+    return {
         "idle": "[green]IDLE[/green]",
         "busy": "[blue]BUSY[/blue]",
         "claiming": "[yellow]CLAIM[/yellow]",
         "releasing": "[yellow]RELEASE[/yellow]",
         "error": "[red]ERROR[/red]",
-    }
-    return colors.get(status, status)
+    }.get(status, status)
 
 
 def _elapsed(started_at: str | None) -> str:
@@ -649,7 +625,6 @@ def _elapsed(started_at: str | None) -> str:
 
 
 def _slugify(text: str, max_len: int = 30) -> str:
-    """Turn a task description into a branch-safe slug."""
     slug = text.lower().strip()
     slug = re.sub(r"[^a-z0-9\s-]", "", slug)
     slug = re.sub(r"[\s-]+", "-", slug)
@@ -658,10 +633,7 @@ def _slugify(text: str, max_len: int = 30) -> str:
 
 
 def dispatch_task_headless(root: Path, description: str) -> tuple[str, str | None]:
-    """Dispatch a task without any console output. Returns (wt_id, error_msg).
-
-    Used by the TUI dashboard. On success error_msg is None.
-    """
+    """Dispatch a task without any console output. Returns (wt_id, error_msg)."""
     try:
         return _dispatch_task_impl(root, description)
     except Exception as e:
@@ -673,7 +645,6 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     slug = _slugify(description)
     branch_name = f"task/{slug}-{task_id}"
 
-    # Claim
     claimed_id: str | None = None
     with with_state_lock(root) as state:
         for wt in state.worktrees:
@@ -684,9 +655,10 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     if claimed_id is None:
         return ("", "No idle worktrees — all slots busy")
 
-    # Branch
     state = read_state(root)
-    claimed_wt = next(w for w in state.worktrees if w.id == claimed_id)
+    claimed_wt = _find_worktree_safe(state, claimed_id)
+    if not claimed_wt:
+        return ("", f"Worktree {claimed_id} disappeared")
     wt_abs = str(root / claimed_wt.path)
     remote = state.config.remote
     base_ref = f"{remote}/{state.config.base_branch}"
@@ -696,30 +668,27 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
         git_ops.checkout_new_branch(branch_name, base_ref, cwd=wt_abs)
     except Exception as e:
         with with_state_lock(root) as state:
-            for wt in state.worktrees:
-                if wt.id == claimed_id:
-                    wt.status = "idle"
-                    wt.branch = f"{state.config.holding_branch}/{claimed_id}"
-                    break
+            wt = _find_worktree_safe(state, claimed_id)
+            if wt:
+                wt.status = "idle"
+                wt.branch = f"{state.config.holding_branch}/{claimed_id}"
         return (claimed_id, f"Git setup failed: {e}")
 
-    # Spawn
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
     tmux_session = f"lane-{claimed_id}"
 
     with with_state_lock(root) as state:
-        for wt in state.worktrees:
-            if wt.id == claimed_id:
-                wt.status = "busy"
-                wt.branch = branch_name
-                wt.task = description
-                wt.task_id = task_id
-                wt.log_path = log_file
-                wt.tmux_session = tmux_session
-                wt.started_at = now_iso()
-                break
+        wt = _find_worktree_safe(state, claimed_id)
+        if wt:
+            wt.status = "busy"
+            wt.branch = branch_name
+            wt.task = description
+            wt.task_id = task_id
+            wt.log_path = log_file
+            wt.tmux_session = tmux_session
+            wt.started_at = now_iso()
 
     if state.config.use_tmux and tmux_available():
         pid = spawn_tmux(
@@ -734,11 +703,8 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
         )
 
     with with_state_lock(root) as state:
-        for wt in state.worktrees:
-            if wt.id == claimed_id:
-                wt.pid = pid
-                break
+        wt = _find_worktree_safe(state, claimed_id)
+        if wt:
+            wt.pid = pid
 
     return (claimed_id, None)
-
-
