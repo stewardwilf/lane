@@ -32,7 +32,9 @@ def spawn_tmux(
 
     # Build the full command that tmux will run
     # The wrapper script handles: running the agent, logging, and auto-release
-    cmd_parts = [str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd + [task]
+    cmd_parts = [str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd
+    if task:
+        cmd_parts.append(task)
     shell_cmd = " ".join(_shell_quote(p) for p in cmd_parts)
 
     subprocess.run(
@@ -67,7 +69,9 @@ def spawn_subprocess(
     wrapper = Path(__file__).parent / "data" / "wrapper.sh"
     lane_bin = shutil.which("lane") or "lane"
 
-    cmd = ["bash", str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd + [task]
+    cmd = ["bash", str(wrapper), wt_id, wt_path, log_path, str(root), lane_bin] + agent_cmd
+    if task:
+        cmd.append(task)
 
     proc = subprocess.Popen(
         cmd,

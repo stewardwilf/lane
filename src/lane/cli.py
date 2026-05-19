@@ -465,8 +465,7 @@ def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tup
     tmux_session = f"lane-{wt_id}"
 
     agent_cmd = list(state.config.agent_cmd)
-    if prompt:
-        agent_cmd.append(prompt)
+    task_prompt = prompt or ""
 
     with with_state_lock(root) as locked:
         w = _find_worktree_safe(locked, wt_id)
@@ -480,12 +479,12 @@ def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tup
         pid = spawn_tmux(
             session_name=tmux_session, wt_id=wt_id, wt_path=wt_abs,
             log_path=log_file, agent_cmd=agent_cmd,
-            task=prompt or wt.task or "", root=root,
+            task=task_prompt, root=root,
         )
     else:
         pid = spawn_subprocess(
             wt_id=wt_id, wt_path=wt_abs, log_path=log_file,
-            agent_cmd=agent_cmd, task=prompt or wt.task or "", root=root,
+            agent_cmd=agent_cmd, task=task_prompt, root=root,
         )
 
     with with_state_lock(root) as locked:

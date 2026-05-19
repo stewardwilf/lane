@@ -13,14 +13,16 @@ echo "[lane] worktree: $WT_ID" >> "$LOG"
 echo "[lane] command: $*" >> "$LOG"
 echo "" >> "$LOG"
 
-# Capture output to log via tmux pipe-pane (agent sees a real tty)
+# Capture pane output to log file. The agent sees a real tty (no buffering).
 if [ -n "${TMUX_PANE:-}" ]; then
-    tmux pipe-pane -o "cat >> '$LOG'"
+    tmux pipe-pane -o "cat >> \"$LOG\""
 fi
 
+# Run the agent — prompt is the last argument(s)
 "$@"
 EXIT=$?
 
+# Stop capturing
 if [ -n "${TMUX_PANE:-}" ]; then
     tmux pipe-pane
 fi
@@ -28,5 +30,4 @@ fi
 echo "" >> "$LOG"
 echo "[lane] agent exited with code $EXIT at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
-# Mark as done — do NOT release. User decides when to release.
 cd "$ROOT" && "$LANE_BIN" mark-done "$WT_ID" >> "$LOG" 2>&1

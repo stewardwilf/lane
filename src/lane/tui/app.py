@@ -180,7 +180,7 @@ class LaneDashboard(App):
         Binding("s", "stop", "Stop", show=True, priority=True),
         Binding("r", "release", "Release", show=True, priority=True),
         Binding("n", "new_task", "New task", show=True, priority=True),
-        Binding("slash", "focus_reply", "/Reply", show=True, priority=True),
+        Binding("i", "focus_reply", "Reply", show=True, priority=True),
         Binding("q", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -209,7 +209,7 @@ class LaneDashboard(App):
                 yield Static("", id="pane-header")
                 yield OutputPane(id="output-pane", highlight=True, markup=True, max_lines=5000)
                 with Vertical(id="reply-bar"):
-                    yield Static("[dim]/ to reply · sends to selected worktree's Claude session[/dim]", id="reply-hint")
+                    yield Static("[dim]i to reply · sends to selected worktree's Claude session[/dim]", id="reply-hint")
                     yield ReplyInput(placeholder="Type a message to Claude...", id="reply-input")
         yield Footer()
 
@@ -341,22 +341,22 @@ class LaneDashboard(App):
         if not wt:
             header.update(" [dim]select a worktree[/dim]")
         elif wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach · [bold]/[/bold] reply[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach · [bold]i[/bold] reply[/dim]")
         elif wt.status == "done":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]/[/bold] continue · [bold]r[/bold] release[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]i[/bold] continue · [bold]r[/bold] release[/dim]")
         elif wt.status == "idle":
-            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · [bold]/[/bold] or [bold]n[/bold] to dispatch[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · [bold]i[/bold] or [bold]n[/bold] to dispatch[/dim]")
         else:
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
 
     def _update_reply_hint(self, wt: Worktree | None) -> None:
         hint = self.query_one("#reply-hint", Static)
         if not wt or wt.status == "idle":
-            hint.update("[dim]/ to type · dispatches a new task[/dim]")
+            hint.update("[dim]i to type · dispatches a new task[/dim]")
         elif wt.status == "busy":
-            hint.update(f"[dim]/ to reply · sends to [bold]{wt.id}[/bold] Claude session[/dim]")
+            hint.update(f"[dim]i to reply · sends to [bold]{wt.id}[/bold] Claude session[/dim]")
         elif wt.status == "done":
-            hint.update(f"[dim]/ to continue · starts new Claude session in [bold]{wt.id}[/bold][/dim]")
+            hint.update(f"[dim]i to continue · starts new Claude session in [bold]{wt.id}[/bold][/dim]")
 
     def _load_full_log(self, wt: Worktree) -> None:
         if not wt.log_path:
@@ -440,10 +440,10 @@ class LaneDashboard(App):
         if not wt:
             return
         if wt.status == "busy":
-            self.notify("Already running — press a to attach, or / to reply", severity="warning")
+            self.notify("Already running — press a to attach, or i to reply", severity="warning")
             return
         if wt.status == "idle":
-            self.notify("Idle — press n or / to dispatch", severity="warning")
+            self.notify("Idle — press n or i to dispatch", severity="warning")
             return
 
         self.push_screen(
@@ -489,7 +489,7 @@ class LaneDashboard(App):
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if not wt or not wt.tmux_session:
-            self.notify("No running session — press c to continue or / to reply", severity="warning")
+            self.notify("No running session — press c to continue or i to reply", severity="warning")
             return
         if wt.status != "busy":
             self.notify(f"{wt.id} is not running", severity="warning")
