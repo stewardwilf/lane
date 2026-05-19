@@ -355,15 +355,36 @@ def release(
     console.print(f"[green]Released {wt_id}.[/green]")
 
 
-# ── auto-release (internal) ─────────────────────────────────────
+# ── mark-done (internal) ────────────────────────────────────────
 
-@app.command(name="auto-release", hidden=True)
-def auto_release(
+@app.command(name="mark-done", hidden=True)
+def mark_done(
     wt_id: str = typer.Argument(..., help="Worktree ID."),
 ):
-    """Internal: called by wrapper.sh on agent exit."""
+    """Internal: called by wrapper.sh when agent exits. Keeps worktree claimed."""
     root = find_root()
-    _do_release(root, wt_id, quiet=True)
+    with with_state_lock(root) as state:
+        wt = _find_worktree_safe(state, wt_id)
+        if wt and wt.status == "busy":
+            wt.status = "done"
+            wt.pid = None
+            wt.tmux_session = None
+
+
+# ── continue ────────────────────────────────────────────────────
+
+@app.command(name="continue")
+def continue_task(
+    wt_id: str = typer.Argument(..., help="Worktree ID to continue working in."),
+    prompt: str = typer.Argument(None, help="Optional follow-up prompt for Claude."),
+):
+    """Start a new Claude session in a worktree that's done but not released."""
+    root = find_root()
+    wt_id, err = _continue_worktree(root, wt_id, prompt)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Continued {wt_id}[/green] — use `lane attach {wt_id}` to interact.")
 
 
 # ── destroy ─────────────────────────────────────────────────────
@@ -376,9 +397,9 @@ def destroy(
     root = find_root()
     state = read_state(root)
 
-    busy = [w for w in state.worktrees if w.status == "busy"]
+    busy = [w for w in state.worktrees if w.status in ("busy", "done")]
     if busy and not force:
-        console.print(f"[red]{len(busy)} worktree(s) are busy.[/red] Use --force to destroy anyway.")
+        console.print(f"[red]{len(busy)} worktree(s) are in use.[/red] Use --force to destroy anyway.")
         raise typer.Exit(1)
 
     for wt in state.worktrees:
@@ -425,6 +446,54 @@ def _ensure_tmux() -> None:
     if not tmux_available():
         console.print("[yellow]tmux not found — attach/detach will be unavailable.[/yellow]")
         console.print("Install it manually: [bold]brew install tmux[/bold] (macOS) or [bold]apt install tmux[/bold] (Linux)")
+
+
+def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tuple[str, str | None]:
+    """Spawn a new Claude session in an existing done/error worktree. Returns (wt_id, error)."""
+    state = read_state(root)
+    wt = _find_worktree_safe(state, wt_id)
+    if not wt:
+        return (wt_id, f"Worktree {wt_id} not found")
+    if wt.status == "busy":
+        return (wt_id, f"{wt_id} already has a running agent — attach instead")
+    if wt.status == "idle":
+        return (wt_id, f"{wt_id} is idle — use `lane task` to dispatch")
+
+    wt_abs = str(root / wt.path)
+    log_file = os.path.join(str(root), state.config.logs_dir, f"{wt_id}.log")
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    tmux_session = f"lane-{wt_id}"
+
+    agent_cmd = list(state.config.agent_cmd)
+    if prompt:
+        agent_cmd.append(prompt)
+
+    with with_state_lock(root) as locked:
+        w = _find_worktree_safe(locked, wt_id)
+        if w:
+            w.status = "busy"
+            w.tmux_session = tmux_session
+            w.log_path = log_file
+            w.started_at = now_iso()
+
+    if state.config.use_tmux and tmux_available():
+        pid = spawn_tmux(
+            session_name=tmux_session, wt_id=wt_id, wt_path=wt_abs,
+            log_path=log_file, agent_cmd=agent_cmd,
+            task=prompt or wt.task or "", root=root,
+        )
+    else:
+        pid = spawn_subprocess(
+            wt_id=wt_id, wt_path=wt_abs, log_path=log_file,
+            agent_cmd=agent_cmd, task=prompt or wt.task or "", root=root,
+        )
+
+    with with_state_lock(root) as locked:
+        w = _find_worktree_safe(locked, wt_id)
+        if w:
+            w.pid = pid
+
+    return (wt_id, None)
 
 
 def _find_worktree(state: PoolState, wt_id: str) -> Worktree:
@@ -537,8 +606,10 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
 
             if not alive:
                 console.print()
-                console.print(Rule("[green]task complete[/green]", style="green"))
-                console.print(f"  [dim]Branch[/dim] [bold]{branch}[/bold] [dim]has the changes.[/dim]")
+                console.print(Rule("[yellow]Claude exited[/yellow]", style="yellow"))
+                console.print(f"  [dim]Branch[/dim]    [bold]{branch}[/bold] [dim]has the changes.[/dim]")
+                console.print(f"  [dim]Continue:[/dim] lane continue {wt_id} [dim]\"follow-up prompt\"[/dim]")
+                console.print(f"  [dim]Release:[/dim]  lane release {wt_id}")
                 break
 
             time.sleep(0.3)
@@ -603,8 +674,8 @@ def _status_styled(status: str) -> str:
     return {
         "idle": "[green]IDLE[/green]",
         "busy": "[blue]BUSY[/blue]",
-        "claiming": "[yellow]CLAIM[/yellow]",
-        "releasing": "[yellow]RELEASE[/yellow]",
+        "done": "[yellow]DONE[/yellow]",
+        "claiming": "[dim]CLAIM[/dim]",
         "error": "[red]ERROR[/red]",
     }.get(status, status)
 

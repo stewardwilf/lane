@@ -1,45 +1,37 @@
-"""Stale-PID detection and auto-recovery."""
+"""Stale-PID detection — marks done, never auto-releases."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from lane.runner import is_pid_alive, is_tmux_session_alive
-from lane.state import PoolState
+from lane.state import PoolState, write_state
 
 
 def check_stale_workers(state: PoolState, root: Path | None = None) -> list[str]:
     """Check for busy worktrees whose agent has exited.
 
-    Uses tmux session existence as the primary check (more reliable than PID),
-    falls back to PID check for non-tmux workers.
-
-    Returns list of stale wt IDs.
+    Marks them as 'done' so the user can continue or release.
+    Returns list of worktree IDs that were marked done.
     """
-    stale = []
+    marked = []
     for wt in state.worktrees:
-        if wt.status not in ("busy",):
+        if wt.status != "busy":
             continue
 
-        # If there's a tmux session, check that
+        dead = False
         if wt.tmux_session:
-            if not is_tmux_session_alive(wt.tmux_session):
-                stale.append(wt.id)
-        # Otherwise fall back to PID, but only if we have a real PID
+            dead = not is_tmux_session_alive(wt.tmux_session)
         elif wt.pid is not None and wt.pid > 0:
-            if not is_pid_alive(wt.pid):
-                stale.append(wt.id)
+            dead = not is_pid_alive(wt.pid)
 
-    return stale
+        if dead:
+            wt.status = "done"
+            wt.pid = None
+            wt.tmux_session = None
+            marked.append(wt.id)
 
+    if marked and root:
+        write_state(state, root)
 
-def auto_recover(root: Path, wt_ids: list[str]) -> None:
-    """Release stale worktrees back to idle."""
-    if not wt_ids:
-        return
-    from lane.cli import _do_release
-    for wt_id in wt_ids:
-        try:
-            _do_release(root, wt_id, quiet=True)
-        except Exception:
-            pass
+    return marked

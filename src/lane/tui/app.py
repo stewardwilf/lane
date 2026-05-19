@@ -17,8 +17,17 @@ from textual.timer import Timer
 from textual.widgets import Footer, Static, RichLog, DataTable, Input, Label
 
 from lane.state import read_state, PoolState, Worktree, write_state
-from lane.recovery import check_stale_workers, auto_recover
-from lane.runner import kill_agent, is_tmux_session_alive
+from lane.recovery import check_stale_workers
+from lane.runner import kill_agent
+
+
+LOGO = """\
+[bold]┌─┬─┐[/bold]
+[bold]│[blue]●[/blue]│ │[/bold]  [bold]lane[/bold] [dim]worktree pool[/dim]
+[bold]├─┼─┤[/bold]
+[bold]│ │ │[/bold]
+[bold]└─┴─┘[/bold]\
+"""
 
 
 class WorktreeTable(DataTable):
@@ -35,18 +44,18 @@ class StatusBar(Static):
     def update_from_state(self, state: PoolState) -> None:
         busy = sum(1 for w in state.worktrees if w.status == "busy")
         idle = sum(1 for w in state.worktrees if w.status == "idle")
-        error = sum(1 for w in state.worktrees if w.status == "error")
+        done = sum(1 for w in state.worktrees if w.status == "done")
         total = len(state.worktrees)
-        base = state.config.base_branch
 
-        self.update(
-            f" [bold]lane[/bold]  ·  "
-            f"pool={total}  "
-            f"[blue]busy={busy}[/blue]  "
-            f"[green]idle={idle}[/green]  "
-            f"[red]errors={error}[/red]  "
-            f"·  base={base}"
-        )
+        parts = [
+            f" [bold]lane[/bold]  ·  pool={total}",
+            f"[blue]busy={busy}[/blue]",
+            f"[green]idle={idle}[/green]",
+        ]
+        if done:
+            parts.append(f"[yellow]done={done}[/yellow]")
+        parts.append(f"·  base={state.config.base_branch}")
+        self.update("  ".join(parts))
 
 
 class DetailPanel(Static):
@@ -70,7 +79,6 @@ class OutputPane(RichLog):
     """Right pane — shows live agent output with ANSI rendering."""
 
     def write_ansi(self, line: str) -> None:
-        """Write a line, interpreting ANSI escape codes."""
         self.write(Text.from_ansi(line))
 
 
@@ -88,10 +96,15 @@ class TaskInputScreen(ModalScreen[str | None]):
 
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
+    def __init__(self, title: str = "New task", placeholder: str = "e.g. Fix the broken login redirect", **kwargs):
+        super().__init__(**kwargs)
+        self._title = title
+        self._placeholder = placeholder
+
     def compose(self) -> ComposeResult:
         with Vertical(id="task-dialog"):
-            yield Label("[bold]New task[/bold]  [dim]describe the work for the agent[/dim]", id="task-label")
-            yield Input(placeholder="e.g. Fix the broken login redirect", id="task-input")
+            yield Label(f"[bold]{self._title}[/bold]", id="task-label")
+            yield Input(placeholder=self._placeholder, id="task-input")
 
     def on_mount(self) -> None:
         self.query_one("#task-input", Input).focus()
@@ -105,15 +118,18 @@ class TaskInputScreen(ModalScreen[str | None]):
 
 
 class LaneDashboard(App):
-    TITLE = "lane dashboard"
+    TITLE = "lane"
 
     CSS = """
     Screen { layout: vertical; }
-    StatusBar {
-        height: 3; padding: 1 2;
+    #header-bar {
+        height: 5; padding: 0 2;
         background: $surface;
         border-bottom: solid $primary-background;
+        layout: horizontal;
     }
+    #logo { width: auto; padding: 0 1; }
+    StatusBar { height: 5; padding: 1 2; content-align: left middle; }
     #main { layout: horizontal; height: 1fr; }
     #left {
         width: 1fr; max-width: 64;
@@ -138,6 +154,7 @@ class LaneDashboard(App):
 
     BINDINGS = [
         Binding("a", "attach", "Attach", show=True),
+        Binding("c", "continue_task", "Continue", show=True),
         Binding("s", "stop", "Stop", show=True),
         Binding("r", "release", "Release", show=True),
         Binding("n", "new_task", "New task", show=True),
@@ -149,7 +166,7 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
-    _log_offsets: dict[str, int]  # track per-worktree log read position
+    _log_offsets: dict[str, int]
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
@@ -158,7 +175,9 @@ class LaneDashboard(App):
         self._log_offsets = {}
 
     def compose(self) -> ComposeResult:
-        yield StatusBar(id="status-bar")
+        with Horizontal(id="header-bar"):
+            yield Static(LOGO, id="logo")
+            yield StatusBar(id="status-bar")
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield WorktreeTable()
@@ -178,10 +197,7 @@ class LaneDashboard(App):
         except SystemExit:
             return
 
-        stale = check_stale_workers(state, self.root)
-        if stale:
-            Thread(target=auto_recover, args=(self.root, stale), daemon=True).start()
-
+        check_stale_workers(state, self.root)
         self._state = state
 
         self.query_one(StatusBar).update_from_state(state)
@@ -206,19 +222,10 @@ class LaneDashboard(App):
                     table.update_cell(wt.id, "task", _task_text(wt), update_width=False)
                     table.update_cell(wt.id, "elapsed", _elapsed(wt.started_at) if wt.started_at else "—", update_width=False)
                 except Exception:
-                    prev_selected = self._selected_wt_id
                     table.clear()
                     self._table_initialized = False
-                    self._refresh_state()
-                    if prev_selected:
-                        try:
-                            idx = next(i for i, w in enumerate(state.worktrees) if w.id == prev_selected)
-                            table.move_cursor(row=idx)
-                        except (StopIteration, Exception):
-                            pass
                     return
 
-        # Tail the selected worktree's log
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
@@ -235,7 +242,6 @@ class LaneDashboard(App):
             pane = self.query_one(OutputPane)
             pane.clear()
 
-            # Load full log history for this worktree
             if self._state:
                 wt = next((w for w in self._state.worktrees if w.id == new_id), None)
                 self.query_one(DetailPanel).update_from_worktree(wt)
@@ -245,17 +251,18 @@ class LaneDashboard(App):
 
     def _update_pane_header(self, wt: Worktree | None) -> None:
         header = self.query_one("#pane-header", Static)
-        if wt and wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]a[/bold] to interact[/dim]")
-        elif wt and wt.status == "idle":
-            header.update(f" [bold]{wt.id}[/bold] [dim]· idle[/dim]")
-        elif wt:
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
-        else:
+        if not wt:
             header.update(" [dim]select a worktree[/dim]")
+        elif wt.status == "busy":
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]a[/bold] to interact[/dim]")
+        elif wt.status == "done":
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· press [bold]c[/bold] to continue · [bold]r[/bold] to release[/dim]")
+        elif wt.status == "idle":
+            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · press [bold]n[/bold] to dispatch[/dim]")
+        else:
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
 
     def _load_full_log(self, wt: Worktree) -> None:
-        """Load the entire log file into the output pane on selection change."""
         if not wt.log_path:
             return
         log_path = Path(wt.log_path)
@@ -273,7 +280,6 @@ class LaneDashboard(App):
             pass
 
     def _tail_output(self, wt: Worktree | None) -> None:
-        """Append new log lines since last read."""
         if not wt or not wt.log_path:
             return
 
@@ -297,14 +303,16 @@ class LaneDashboard(App):
             for line in new_content.splitlines():
                 if line.strip():
                     pane.write_ansi(line)
-
         except Exception:
             pass
 
     # ── Actions ─────────────────────────────────────────────────
 
     def action_new_task(self) -> None:
-        self.push_screen(TaskInputScreen(), self._on_task_submitted)
+        self.push_screen(
+            TaskInputScreen("New task", "Describe the work for Claude"),
+            self._on_task_submitted,
+        )
 
     def _on_task_submitted(self, description: str | None) -> None:
         if not description:
@@ -326,6 +334,44 @@ class LaneDashboard(App):
 
         Thread(target=_dispatch, daemon=True).start()
 
+    def action_continue_task(self) -> None:
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt:
+            return
+        if wt.status == "busy":
+            self.notify("Already running — press a to attach", severity="warning")
+            return
+        if wt.status == "idle":
+            self.notify("Idle — press n to dispatch a new task", severity="warning")
+            return
+
+        self.push_screen(
+            TaskInputScreen("Continue task", "Follow-up prompt (or leave empty to resume)"),
+            self._on_continue_submitted,
+        )
+
+    def _on_continue_submitted(self, prompt: str | None) -> None:
+        wt_id = self._selected_wt_id
+        if not wt_id:
+            return
+
+        self.notify(f"Continuing {wt_id}...", timeout=3)
+
+        def _cont():
+            try:
+                from lane.cli import _continue_worktree
+                _, err = _continue_worktree(self.root, wt_id, prompt)
+                if err:
+                    self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+                else:
+                    self.call_from_thread(self.notify, f"Resumed {wt_id}", timeout=3)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=8)
+
+        Thread(target=_cont, daemon=True).start()
+
     def _select_worktree(self, wt_id: str) -> None:
         self._selected_wt_id = wt_id
         pane = self.query_one(OutputPane)
@@ -344,7 +390,7 @@ class LaneDashboard(App):
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if not wt or not wt.tmux_session:
-            self.notify("No tmux session for this worktree", severity="warning")
+            self.notify("No running session — press c to continue", severity="warning")
             return
         if wt.status != "busy":
             self.notify(f"{wt.id} is not running", severity="warning")
@@ -357,7 +403,7 @@ class LaneDashboard(App):
         if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
-        if not wt or wt.status not in ("busy", "error"):
+        if not wt or wt.status != "busy":
             self.notify(f"{self._selected_wt_id} is not running", severity="warning")
             return
 
@@ -370,6 +416,9 @@ class LaneDashboard(App):
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if wt and wt.status == "idle":
             self.notify(f"{self._selected_wt_id} is already idle", severity="warning")
+            return
+        if wt and wt.status == "busy":
+            self.notify("Stop the agent first (s), or detach and release", severity="warning")
             return
 
         def _release():
@@ -406,7 +455,7 @@ def _status_styled(status: str) -> str:
     return {
         "idle": "[green]IDLE[/green]",
         "busy": "[blue]BUSY[/blue]",
-        "claiming": "[yellow]CLAIM[/yellow]",
-        "releasing": "[yellow]RELEASE[/yellow]",
+        "done": "[yellow]DONE[/yellow]",
+        "claiming": "[dim]CLAIM[/dim]",
         "error": "[red]ERROR[/red]",
     }.get(status, status)

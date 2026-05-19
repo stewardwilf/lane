@@ -8,22 +8,19 @@ cd "$WT_PATH" || exit 1
 
 mkdir -p "$(dirname "$LOG")"
 
-echo "[lane] agent started at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOG"
+echo "[lane] agent started at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 echo "[lane] worktree: $WT_ID" >> "$LOG"
 echo "[lane] command: $*" >> "$LOG"
 echo "" >> "$LOG"
 
-# Use tmux pipe-pane to capture output to log file.
-# This way the agent sees a real tty (no buffering) and output streams live.
+# Capture output to log via tmux pipe-pane (agent sees a real tty)
 if [ -n "${TMUX_PANE:-}" ]; then
     tmux pipe-pane -o "cat >> '$LOG'"
 fi
 
-# Run the agent directly — it sees a real tty, streams normally
 "$@"
 EXIT=$?
 
-# Stop capturing
 if [ -n "${TMUX_PANE:-}" ]; then
     tmux pipe-pane
 fi
@@ -31,4 +28,5 @@ fi
 echo "" >> "$LOG"
 echo "[lane] agent exited with code $EXIT at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
-cd "$ROOT" && "$LANE_BIN" auto-release "$WT_ID" >> "$LOG" 2>&1
+# Mark as done — do NOT release. User decides when to release.
+cd "$ROOT" && "$LANE_BIN" mark-done "$WT_ID" >> "$LOG" 2>&1
