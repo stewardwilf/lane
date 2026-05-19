@@ -373,10 +373,10 @@ def release(
     console.print(f"[green]Released {wt_id}.[/green]")
 
 
-# ── _release (internal) ────────────────────────────────────────
+# ── auto-release (internal) ─────────────────────────────────────
 
-@app.command(hidden=True)
-def _release(
+@app.command(name="auto-release", hidden=True)
+def auto_release(
     wt_id: str = typer.Argument(..., help="Worktree ID."),
 ):
     """Internal: called by wrapper.sh on agent exit."""

@@ -21,4 +21,4 @@ echo "" >> "$LOG"
 echo "[lane] agent exited with code $EXIT at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
 # Release the worktree using the same Python that launched us
-cd "$ROOT" && "$PYTHON" -m lane _release "$WT_ID" >> "$LOG" 2>&1
+cd "$ROOT" && "$PYTHON" -m lane auto-release "$WT_ID" >> "$LOG" 2>&1

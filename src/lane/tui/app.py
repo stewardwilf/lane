@@ -24,10 +24,10 @@ class WorktreeTable(DataTable):
     """Left-pane table of worktree slots."""
 
     def on_mount(self) -> None:
-        self.add_column("ID", key="id")
-        self.add_column("Status", key="status")
+        self.add_column("ID", key="id", width=8)
+        self.add_column("Status", key="status", width=10)
         self.add_column("Task", key="task")
-        self.add_column("Elapsed", key="elapsed")
+        self.add_column("Elapsed", key="elapsed", width=10)
         self.cursor_type = "row"
         self.zebra_stripes = True
 
