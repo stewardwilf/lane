@@ -134,9 +134,14 @@ def task(
     description: str = typer.Argument(..., help="Task description for the agent."),
     task_id: str = typer.Option(None, "--id", help="Custom task ID (default: random hex)."),
     branch_prefix: str = typer.Option("task/", "--branch-prefix", help="Branch name prefix."),
-    wait: bool = typer.Option(False, "--wait", "-w", help="Block until the agent finishes."),
+    background: bool = typer.Option(False, "--background", "--bg", help="Dispatch and return immediately."),
 ):
     """Dispatch a task to an idle worktree."""
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+    import time
+
     root = find_root()
 
     if task_id is None:
@@ -145,7 +150,8 @@ def task(
     slug = _slugify(description)
     branch_name = f"{branch_prefix}{slug}-{task_id}"
 
-    # Phase 1: Claim a worktree (under lock)
+    # ── Step 1: Claim ──────────────────────────────────────────
+    _step(f"Claiming idle worktree")
     claimed_id: str | None = None
     with with_state_lock(root) as state:
         for wt in state.worktrees:
@@ -155,32 +161,39 @@ def task(
                 break
 
         if claimed_id is None:
-            console.print("[red]No idle worktrees available.[/red] All slots are busy.")
+            console.print("[red]  No idle worktrees available.[/red] All slots are busy.")
             raise typer.Exit(75)  # EX_TEMPFAIL
 
-    # Phase 2: Git operations (outside lock)
+    _done(f"Claimed [bold]{claimed_id}[/bold]")
+
+    # ── Step 2: Branch ─────────────────────────────────────────
     claimed_wt = next(w for w in state.worktrees if w.id == claimed_id)
     wt_abs = str(root / claimed_wt.path)
     remote = state.config.remote
     base_ref = f"{remote}/{state.config.base_branch}"
 
+    _step(f"Fetching {remote} and creating branch")
     try:
-        console.print(f"Claiming [bold]{claimed_id}[/bold]...")
         git_ops.fetch(remote, cwd=wt_abs)
         git_ops.checkout_new_branch(branch_name, base_ref, cwd=wt_abs)
     except Exception as e:
-        # Release on failure
         with with_state_lock(root) as state:
             for wt in state.worktrees:
                 if wt.id == claimed_id:
                     wt.status = "idle"
                     wt.branch = state.config.holding_branch
                     break
-        console.print(f"[red]Failed to set up worktree:[/red] {e}")
+        console.print(f"[red]  Failed:[/red] {e}")
         raise typer.Exit(1)
 
-    # Phase 3: Update state and spawn agent (under lock)
+    _done(f"Branch [dim]{branch_name}[/dim]")
+
+    # ── Step 3: Spawn ──────────────────────────────────────────
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
+    # Clear any old log
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(log_file).write_text("")
+
     tmux_session = f"lane:{claimed_id}"
 
     with with_state_lock(root) as state:
@@ -195,7 +208,7 @@ def task(
                 wt.started_at = now_iso()
                 break
 
-    # Phase 4: Spawn agent (outside lock)
+    _step("Starting agent")
     if state.config.use_tmux and tmux_available():
         pid = spawn_tmux(
             session_name=tmux_session,
@@ -216,24 +229,25 @@ def task(
             root=root,
         )
 
-    # Store PID
     with with_state_lock(root) as state:
         for wt in state.worktrees:
             if wt.id == claimed_id:
                 wt.pid = pid
                 break
 
-    console.print(f"[green]Dispatched[/green] to [bold]{claimed_id}[/bold]")
-    console.print(f"  Task:    {description}")
-    console.print(f"  Branch:  {branch_name}")
-    console.print(f"  Task ID: {task_id}")
-    if state.config.use_tmux:
-        console.print(f"  tmux:    {tmux_session}")
-    console.print(f"  Log:     {log_file}")
+    agent_name = " ".join(state.config.agent_cmd)
+    _done(f"Agent running ({agent_name}) · pid {pid}")
 
-    if wait:
-        console.print("\nWaiting for agent to finish...")
-        _wait_for_completion(root, claimed_id)
+    # ── Background mode: print summary and exit ────────────────
+    if background:
+        console.print(f"\n  [dim]Task ID[/dim]  {task_id}")
+        console.print(f"  [dim]Attach[/dim]   lane attach {claimed_id}")
+        console.print(f"  [dim]Logs[/dim]     lane logs {claimed_id} -f")
+        return
+
+    # ── Live streaming mode (default) ──────────────────────────
+    console.print()
+    _stream_log(root, claimed_id, log_file, description, branch_name, task_id)
 
 
 # ── status ──────────────────────────────────────────────────────
@@ -496,6 +510,89 @@ def _do_release(root: Path, wt_id: str, quiet: bool = False) -> None:
                 break
 
 
+def _step(msg: str) -> None:
+    console.print(f"  [dim]>[/dim] {msg}...")
+
+
+def _done(msg: str) -> None:
+    console.print(f"  [green]✓[/green] {msg}")
+
+
+def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: str, task_id: str) -> None:
+    """Stream agent log output live until the task finishes or user hits Ctrl+C."""
+    import time
+    from rich.rule import Rule
+
+    log_path = Path(log_file)
+    seen = 0
+
+    console.print(Rule(f"[bold]{wt_id}[/bold] · {task_desc}", style="dim"))
+    console.print(f"  [dim]branch[/dim]  {branch}")
+    console.print(f"  [dim]task[/dim]    {task_id}")
+    console.print(f"  [dim]ctrl+c[/dim]  detach (agent keeps running)")
+    console.print()
+
+    try:
+        while True:
+            # Check if still running
+            state = read_state(root)
+            wt = next((w for w in state.worktrees if w.id == wt_id), None)
+            finished = wt is None or wt.status not in ("busy", "claiming")
+
+            # Read new log lines
+            if log_path.exists():
+                with open(log_path, "r") as f:
+                    f.seek(seen)
+                    new = f.read()
+                    if new:
+                        seen += len(new)
+                        for line in new.splitlines():
+                            _print_log_line(line)
+
+            if finished:
+                console.print()
+                if wt and wt.status == "error":
+                    console.print(Rule("[red]agent exited with error[/red]", style="red"))
+                else:
+                    console.print(Rule("[green]task complete[/green]", style="green"))
+                    console.print(f"  [dim]Branch[/dim] [bold]{branch}[/bold] [dim]has the changes.[/dim]")
+                break
+
+            time.sleep(0.3)
+
+    except KeyboardInterrupt:
+        console.print()
+        console.print(Rule("[yellow]detached[/yellow]", style="yellow"))
+        console.print(f"  Agent is still running in [bold]{wt_id}[/bold].")
+        console.print(f"  [dim]Reattach:[/dim]  lane logs {wt_id} -f")
+        console.print(f"  [dim]Attach:[/dim]    lane attach {wt_id}")
+        console.print(f"  [dim]Stop:[/dim]      lane stop {wt_id}")
+
+
+def _print_log_line(line: str) -> None:
+    """Print a single log line with contextual styling."""
+    stripped = line.strip()
+    if not stripped:
+        return
+
+    # Lane system messages
+    if stripped.startswith("[lane]"):
+        console.print(f"  [dim]{stripped}[/dim]")
+        return
+
+    # Common agent patterns
+    if any(stripped.startswith(p) for p in ("PASS", "✓", "ok ")):
+        console.print(f"  [green]{stripped}[/green]")
+    elif any(stripped.startswith(p) for p in ("FAIL", "ERROR", "✗", "error:", "Error:")):
+        console.print(f"  [red]{stripped}[/red]")
+    elif stripped.startswith("$") or stripped.startswith("> "):
+        console.print(f"  [yellow]{stripped}[/yellow]")
+    elif any(stripped.startswith(p) for p in ("warning:", "Warning:", "WARN")):
+        console.print(f"  [yellow]{stripped}[/yellow]")
+    else:
+        console.print(f"  {stripped}")
+
+
 def _print_status_table(state: PoolState) -> None:
     busy = sum(1 for w in state.worktrees if w.status == "busy")
     idle = sum(1 for w in state.worktrees if w.status == "idle")
@@ -558,12 +655,3 @@ def _slugify(text: str, max_len: int = 30) -> str:
     return slug or "task"
 
 
-def _wait_for_completion(root: Path, wt_id: str) -> None:
-    """Block until a worktree is no longer busy."""
-    import time
-    while True:
-        state = read_state(root)
-        wt = next((w for w in state.worktrees if w.id == wt_id), None)
-        if wt is None or wt.status != "busy":
-            break
-        time.sleep(2)
