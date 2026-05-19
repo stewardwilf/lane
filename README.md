@@ -7,18 +7,23 @@ Lane manages a fixed pool of pre-warmed git worktrees so you can dispatch multip
 ## Install
 
 ```bash
-# Install directly from GitHub
-pipx install git+https://github.com/stewardwilf/lane.git
-
-# or with uv
+# uv (recommended)
 uv tool install git+https://github.com/stewardwilf/lane.git
+
+# or pipx
+pipx install git+https://github.com/stewardwilf/lane.git
 
 # or from source
 git clone https://github.com/stewardwilf/lane
 cd lane && uv sync && uv run lane --help
 ```
 
-**Prerequisites:** git >= 2.20, python >= 3.11, tmux (recommended; fallback exists but you lose `attach`)
+To update to the latest version:
+```bash
+uv tool install --force git+https://github.com/stewardwilf/lane.git
+```
+
+**Prerequisites:** git >= 2.20, python >= 3.11. tmux is installed automatically via Homebrew during `lane init` if missing (or install manually: `brew install tmux` / `apt install tmux`).
 
 ## Quick start
 
@@ -28,15 +33,17 @@ cd ~/code/my-project
 # 1. Initialise a pool of 4 worktrees off main
 lane init --count 4 --base main
 
-# 2. Dispatch tasks
+# 2. Dispatch a task — streams live output until done
 lane task "Refactor auth middleware to use JWT"
-lane task "Add pagination to /api/orders"
-lane task "Fix the broken redirect on /login"
 
-# 3. Watch them work
+# 3. Dispatch more tasks in the background from other terminals
+lane task --bg "Add pagination to /api/orders"
+lane task --bg "Fix the broken redirect on /login"
+
+# 4. Watch everything in the dashboard
 lane dashboard
 
-# 4. Inspect or intervene
+# 5. Inspect or intervene
 lane attach wt-02      # join the agent's tmux session
 lane logs wt-02 -f     # just tail the log
 lane stop wt-02        # kill the agent (auto-releases)
@@ -47,7 +54,8 @@ lane stop wt-02        # kill the agent (auto-releases)
 | Command | Description |
 |---|---|
 | `lane init` | Create N worktrees in the current repo |
-| `lane task <description>` | Dispatch a task to an idle worktree |
+| `lane task <description>` | Dispatch a task and stream live output (Ctrl+C to detach) |
+| `lane task --bg <description>` | Dispatch a task in the background |
 | `lane status [--watch]` | Show pool status |
 | `lane dashboard` | Open the TUI dashboard |
 | `lane logs <wt-id> [-f]` | Tail a worktree's log |
@@ -58,9 +66,9 @@ lane stop wt-02        # kill the agent (auto-releases)
 
 ## How it works
 
-1. **`lane init`** creates N sibling worktrees and pins each to a holding branch forked from your base branch. You do this once per project.
+1. **`lane init`** creates N sibling worktrees and pins each to a holding branch forked from your base branch. You do this once per project. If tmux isn't installed, it offers to install it via Homebrew.
 
-2. **`lane task`** atomically claims an idle worktree, creates a `task/<slug>` branch off the base, and launches your agent in a tmux session.
+2. **`lane task`** atomically claims an idle worktree, creates a `task/<slug>` branch off the base, and launches your agent in a tmux session. By default it streams the agent's output live — press Ctrl+C to detach without killing the agent.
 
 3. When the agent finishes (or you `lane stop` it), the wrapper script auto-commits any uncommitted work as a WIP save, then resets the worktree back to the holding branch so it's ready for the next task.
 
