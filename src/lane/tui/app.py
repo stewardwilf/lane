@@ -79,11 +79,22 @@ class DetailPanel(Static):
 class OutputPane(RichLog):
     """Right pane — shows live agent output."""
 
+    _last_line: str = ""
+
     def write_clean(self, line: str) -> None:
-        """Write a line, stripping terminal control sequences."""
+        """Write a line, stripping noise from Claude's TUI output."""
         cleaned = _strip_terminal_codes(line)
-        if cleaned.strip():
-            self.write(Text.from_ansi(cleaned))
+        text = cleaned.strip()
+        if not text:
+            return
+        # Skip Claude's spinner/thinking noise
+        if _is_noise(text):
+            return
+        # Deduplicate consecutive identical lines
+        if text == self._last_line:
+            return
+        self._last_line = text
+        self.write(Text.from_ansi(cleaned))
 
 
 class ReplyInput(Input):
@@ -561,6 +572,26 @@ def _elapsed(started_at: str | None) -> str:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     except Exception:
         return "—"
+
+
+_NOISE_PATTERNS = re.compile(
+    r'^[*+·.●◐◑◒◓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▸▶►]+$'       # bare spinner chars
+    r'|thinking with'                              # thinking indicators
+    r'|Simmering|Coalescing|Crystallizing|Bubbling|Percolating'  # claude spinners
+    r'|Warming|Brewing|Distilling|Fermenting|Steeping'
+    r'|▸▸accepted'                                 # claude footer bar
+    r'|esc\s*to\s*interrupt'                       # footer hints
+    r'|shift\+tab'                                 # footer hints
+    r'|to run in background'                       # footer hints
+    r'|ctrl\+b'                                    # tmux hint leaking
+    r'|^\s*›\s*$'                                  # bare prompt char
+    r'|^\s*❯\s*$'                                  # bare prompt char
+)
+
+
+def _is_noise(text: str) -> bool:
+    """Return True if this line is Claude UI noise (spinners, footer, thinking)."""
+    return bool(_NOISE_PATTERNS.search(text))
 
 
 def _strip_terminal_codes(text: str) -> str:
