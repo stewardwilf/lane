@@ -30,9 +30,9 @@ dependencies = [
 lane = "lane.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/wilfsteward/lane"
-Repository = "https://github.com/wilfsteward/lane"
-Issues = "https://github.com/wilfsteward/lane/issues"
+Homepage = "https://github.com/stewardwilf/lane"
+Repository = "https://github.com/stewardwilf/lane"
+Issues = "https://github.com/stewardwilf/lane/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lane"]

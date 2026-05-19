@@ -7,14 +7,14 @@ Lane manages a fixed pool of pre-warmed git worktrees so you can dispatch multip
 ## Install
 
 ```bash
-# pipx (recommended — isolated install, on your PATH)
-pipx install lane
+# Install directly from GitHub
+pipx install git+https://github.com/stewardwilf/lane.git
 
-# or uv
-uv tool install lane
+# or with uv
+uv tool install git+https://github.com/stewardwilf/lane.git
 
 # or from source
-git clone https://github.com/wilfsteward/lane
+git clone https://github.com/stewardwilf/lane
 cd lane && uv sync && uv run lane --help
 ```
 
