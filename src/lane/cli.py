@@ -35,7 +35,7 @@ def init(
     base: str = typer.Option("main", "--base", "-b", help="Base branch to fork tasks from."),
     holding: str = typer.Option("lane/idle", "--holding", help="Holding branch for idle worktrees."),
     remote: str = typer.Option("origin", "--remote", help="Git remote name."),
-    agent_cmd: str = typer.Option("claude -p", "--agent-cmd", help="Agent command (space-separated)."),
+    agent_cmd: str = typer.Option("claude", "--agent-cmd", help="Agent command (space-separated)."),
     setup_script: str = typer.Option(None, "--setup-script", help="Script to run in each worktree after creation."),
 ):
     """Initialise a lane pool in the current git repo."""

@@ -21,7 +21,7 @@ class LaneConfig:
     remote: str = "origin"
     pool_dir: str = os.path.join(LANE_DIR, WORKTREES_DIR)
     logs_dir: str = os.path.join(LANE_DIR, LOGS_DIR)
-    agent_cmd: list[str] = field(default_factory=lambda: ["claude", "-p"])
+    agent_cmd: list[str] = field(default_factory=lambda: ["claude"])
     use_tmux: bool = True
     push_on_release: bool = False
     setup_script: str | None = None
