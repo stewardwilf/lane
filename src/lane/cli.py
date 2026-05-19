@@ -19,6 +19,7 @@ from lane.state import PoolState, Worktree, read_state, write_state, with_state_
 from lane import git_ops
 from lane.runner import tmux_available, spawn_tmux, spawn_subprocess, kill_agent
 from lane.recovery import check_stale_workers
+from lane.recovery import check_stale_workers
 
 app = typer.Typer(
     name="lane",
@@ -653,5 +654,83 @@ def _slugify(text: str, max_len: int = 30) -> str:
     slug = re.sub(r"[\s-]+", "-", slug)
     slug = slug.strip("-")[:max_len].rstrip("-")
     return slug or "task"
+
+
+def dispatch_task_headless(root: Path, description: str) -> tuple[str, str | None]:
+    """Dispatch a task without any console output. Returns (wt_id, error_msg).
+
+    Used by the TUI dashboard. On success error_msg is None.
+    """
+    task_id = "t-" + secrets.token_hex(4)
+    slug = _slugify(description)
+    branch_name = f"task/{slug}-{task_id}"
+
+    # Claim
+    claimed_id: str | None = None
+    with with_state_lock(root) as state:
+        for wt in state.worktrees:
+            if wt.status == "idle":
+                wt.status = "claiming"
+                claimed_id = wt.id
+                break
+    if claimed_id is None:
+        return ("", "No idle worktrees — all slots busy")
+
+    # Branch
+    state = read_state(root)
+    claimed_wt = next(w for w in state.worktrees if w.id == claimed_id)
+    wt_abs = str(root / claimed_wt.path)
+    remote = state.config.remote
+    base_ref = f"{remote}/{state.config.base_branch}"
+
+    try:
+        git_ops.fetch(remote, cwd=wt_abs)
+        git_ops.checkout_new_branch(branch_name, base_ref, cwd=wt_abs)
+    except Exception as e:
+        with with_state_lock(root) as state:
+            for wt in state.worktrees:
+                if wt.id == claimed_id:
+                    wt.status = "idle"
+                    wt.branch = f"{state.config.holding_branch}/{claimed_id}"
+                    break
+        return (claimed_id, f"Git setup failed: {e}")
+
+    # Spawn
+    log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(log_file).write_text("")
+    tmux_session = f"lane:{claimed_id}"
+
+    with with_state_lock(root) as state:
+        for wt in state.worktrees:
+            if wt.id == claimed_id:
+                wt.status = "busy"
+                wt.branch = branch_name
+                wt.task = description
+                wt.task_id = task_id
+                wt.log_path = log_file
+                wt.tmux_session = tmux_session
+                wt.started_at = now_iso()
+                break
+
+    if state.config.use_tmux and tmux_available():
+        pid = spawn_tmux(
+            session_name=tmux_session, wt_id=claimed_id, wt_path=wt_abs,
+            log_path=log_file, agent_cmd=state.config.agent_cmd,
+            task=description, root=root,
+        )
+    else:
+        pid = spawn_subprocess(
+            wt_id=claimed_id, wt_path=wt_abs, log_path=log_file,
+            agent_cmd=state.config.agent_cmd, task=description, root=root,
+        )
+
+    with with_state_lock(root) as state:
+        for wt in state.worktrees:
+            if wt.id == claimed_id:
+                wt.pid = pid
+                break
+
+    return (claimed_id, None)
 
 

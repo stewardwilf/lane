@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Footer, Static, RichLog, DataTable
+from textual.widgets import Footer, Static, RichLog, DataTable, Input, Label
 
 from lane.state import read_state, PoolState, Worktree, write_state
 from lane.recovery import check_stale_workers
@@ -77,6 +78,53 @@ class DetailPanel(Static):
         ]
         self.update("\n".join(lines))
 
+
+# ── Task input modal ────────────────────────────────────────────
+
+class TaskInputScreen(ModalScreen[str | None]):
+    """Modal for entering a new task description."""
+
+    CSS = """
+    TaskInputScreen {
+        align: center middle;
+    }
+    #task-dialog {
+        width: 70;
+        height: auto;
+        max-height: 12;
+        padding: 1 2;
+        background: $surface;
+        border: thick $primary-background;
+    }
+    #task-label {
+        margin-bottom: 1;
+    }
+    #task-input {
+        width: 100%;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="task-dialog"):
+            yield Label("[bold]New task[/bold]  [dim]describe the work for the agent[/dim]", id="task-label")
+            yield Input(placeholder="e.g. Fix the broken login redirect", id="task-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#task-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        self.dismiss(value if value else None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ── Main dashboard ──────────────────────────────────────────────
 
 class LaneDashboard(App):
     """The lane TUI dashboard."""
@@ -195,12 +243,11 @@ class LaneDashboard(App):
         else:
             for wt in state.worktrees:
                 try:
-                    table.get_row(wt.id)  # raises if missing
+                    table.get_row(wt.id)
                     table.update_cell(wt.id, "status", Text.from_markup(_status_styled(wt.status)), update_width=False)
                     table.update_cell(wt.id, "task", _task_text(wt), update_width=False)
                     table.update_cell(wt.id, "elapsed", _elapsed(wt.started_at) if wt.started_at else "—", update_width=False)
                 except Exception:
-                    # Row was removed or pool resized — rebuild
                     prev_selected = self._selected_wt_id
                     table.clear()
                     self._table_initialized = False
@@ -268,6 +315,44 @@ class LaneDashboard(App):
         except Exception:
             pass
 
+    # ── Actions ─────────────────────────────────────────────────
+
+    def action_new_task(self) -> None:
+        self.push_screen(TaskInputScreen(), self._on_task_submitted)
+
+    def _on_task_submitted(self, description: str | None) -> None:
+        if not description:
+            return
+
+        self.notify(f"Dispatching: {description}...", timeout=3)
+
+        # Run dispatch in a thread so it doesn't block the UI
+        def _dispatch():
+            from lane.cli import dispatch_task_headless
+            wt_id, err = dispatch_task_headless(self.root, description)
+            if err:
+                self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+            else:
+                self.call_from_thread(self.notify, f"Dispatched to {wt_id}", timeout=3)
+                # Auto-select the new worktree
+                self.call_from_thread(self._select_worktree, wt_id)
+
+        Thread(target=_dispatch, daemon=True).start()
+
+    def _select_worktree(self, wt_id: str) -> None:
+        self._selected_wt_id = wt_id
+        self._last_log_size = 0
+        log_viewer = self.query_one(LogViewer)
+        log_viewer.clear()
+        # Move cursor to the worktree
+        if self._state:
+            table = self.query_one(WorktreeTable)
+            try:
+                idx = next(i for i, w in enumerate(self._state.worktrees) if w.id == wt_id)
+                table.move_cursor(row=idx)
+            except (StopIteration, Exception):
+                pass
+
     def action_attach(self) -> None:
         if not self._selected_wt_id or not self._state:
             return
@@ -275,12 +360,12 @@ class LaneDashboard(App):
         if not wt or not wt.tmux_session:
             self.notify("No tmux session for this worktree", severity="warning")
             return
+        if wt.status not in ("busy",):
+            self.notify(f"{wt.id} is not running", severity="warning")
+            return
 
-        self.app.suspend()
-        try:
-            os.execvp("tmux", ["tmux", "attach-session", "-t", wt.tmux_session])
-        except Exception as e:
-            self.notify(f"Failed to attach: {e}", severity="error")
+        with self.suspend():
+            os.system(f"tmux attach-session -t {wt.tmux_session}")
 
     def action_stop(self) -> None:
         if not self._selected_wt_id or not self._state:
@@ -296,15 +381,20 @@ class LaneDashboard(App):
     def action_release(self) -> None:
         if not self._selected_wt_id:
             return
-        from lane.cli import _do_release
-        try:
-            _do_release(self.root, self._selected_wt_id, quiet=True)
-            self.notify(f"Released {self._selected_wt_id}")
-        except Exception as e:
-            self.notify(f"Release failed: {e}", severity="error")
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if wt and wt.status == "idle":
+            self.notify(f"{self._selected_wt_id} is already idle", severity="warning")
+            return
 
-    def action_new_task(self) -> None:
-        self.notify("Use `lane task <description>` from another terminal", severity="information")
+        def _release():
+            from lane.cli import _do_release
+            try:
+                _do_release(self.root, self._selected_wt_id, quiet=True)
+                self.call_from_thread(self.notify, f"Released {self._selected_wt_id}")
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
+
+        Thread(target=_release, daemon=True).start()
 
 
 def _task_text(wt: Worktree) -> str:
