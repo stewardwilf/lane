@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-WT_ID="$1"; WT_PATH="$2"; LOG="$3"; ROOT="$4"; PYTHON="$5"
+WT_ID="$1"; WT_PATH="$2"; LOG="$3"; ROOT="$4"; LANE_BIN="$5"
 shift 5
 
 cd "$WT_PATH" || exit 1
@@ -20,5 +20,4 @@ EXIT=${PIPESTATUS[0]}
 echo "" >> "$LOG"
 echo "[lane] agent exited with code $EXIT at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
-# Release the worktree using the same Python that launched us
-cd "$ROOT" && "$PYTHON" -m lane auto-release "$WT_ID" >> "$LOG" 2>&1
+cd "$ROOT" && "$LANE_BIN" auto-release "$WT_ID" >> "$LOG" 2>&1
