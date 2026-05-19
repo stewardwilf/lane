@@ -8,13 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.text import Text
-from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Footer, Header, Static, RichLog, DataTable
+from textual.widgets import Footer, Static, RichLog, DataTable
 
 from lane.state import read_state, PoolState, Worktree, write_state
 from lane.recovery import check_stale_workers
@@ -43,7 +41,6 @@ class StatusBar(Static):
         idle = sum(1 for w in state.worktrees if w.status == "idle")
         error = sum(1 for w in state.worktrees if w.status == "error")
         total = len(state.worktrees)
-
         base = state.config.base_branch
 
         self.update(
@@ -142,10 +139,12 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _last_log_size: int = 0
     _state: PoolState | None = None
+    _table_initialized: bool = False
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
         self.root = root
+        self._table_initialized = False
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
@@ -175,22 +174,36 @@ class LaneDashboard(App):
         self._state = state
 
         # Update status bar
-        status_bar = self.query_one(StatusBar)
-        status_bar.update_from_state(state)
+        self.query_one(StatusBar).update_from_state(state)
 
-        # Update table
+        # Update table — populate once, then update cells in place
         table = self.query_one(WorktreeTable)
-        table.clear()
 
-        for wt in state.worktrees:
-            status_text = _status_styled(wt.status)
-            task_text = wt.task or "—"
-            if len(task_text) > 40:
-                task_text = task_text[:37] + "..."
-            elapsed = _elapsed(wt.started_at) if wt.started_at else "—"
-            table.add_row(wt.id, Text.from_markup(status_text), task_text, elapsed, key=wt.id)
+        if not self._table_initialized:
+            for wt in state.worktrees:
+                table.add_row(
+                    wt.id,
+                    Text.from_markup(_status_styled(wt.status)),
+                    _task_text(wt),
+                    _elapsed(wt.started_at) if wt.started_at else "—",
+                    key=wt.id,
+                )
+            self._table_initialized = True
+        else:
+            for wt in state.worktrees:
+                try:
+                    row_key = table.get_row(wt.id)  # raises if missing
+                    table.update_cell(wt.id, "Status", Text.from_markup(_status_styled(wt.status)))
+                    table.update_cell(wt.id, "Task", _task_text(wt))
+                    table.update_cell(wt.id, "Elapsed", _elapsed(wt.started_at) if wt.started_at else "—")
+                except Exception:
+                    # Row was removed or pool resized — rebuild
+                    table.clear()
+                    self._table_initialized = False
+                    self._refresh_state()
+                    return
 
-        # If we have a selection, update detail + log
+        # Update detail + log for selected worktree
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
@@ -200,7 +213,7 @@ class LaneDashboard(App):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key and event.row_key.value:
             self._selected_wt_id = str(event.row_key.value)
-            self._last_log_size = 0  # Reset log on selection change
+            self._last_log_size = 0
 
             log_viewer = self.query_one(LogViewer)
             log_viewer.clear()
@@ -282,6 +295,11 @@ class LaneDashboard(App):
 
     def action_new_task(self) -> None:
         self.notify("Use `lane task <description>` from another terminal", severity="information")
+
+
+def _task_text(wt: Worktree) -> str:
+    t = wt.task or "—"
+    return t[:37] + "..." if len(t) > 40 else t
 
 
 def _elapsed(started_at: str | None) -> str:
