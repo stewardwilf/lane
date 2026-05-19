@@ -661,6 +661,13 @@ def dispatch_task_headless(root: Path, description: str) -> tuple[str, str | Non
 
     Used by the TUI dashboard. On success error_msg is None.
     """
+    try:
+        return _dispatch_task_impl(root, description)
+    except Exception as e:
+        return ("", str(e))
+
+
+def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     task_id = "t-" + secrets.token_hex(4)
     slug = _slugify(description)
     branch_name = f"task/{slug}-{task_id}"

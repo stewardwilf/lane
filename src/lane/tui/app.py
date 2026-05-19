@@ -328,14 +328,16 @@ class LaneDashboard(App):
 
         # Run dispatch in a thread so it doesn't block the UI
         def _dispatch():
-            from lane.cli import dispatch_task_headless
-            wt_id, err = dispatch_task_headless(self.root, description)
-            if err:
-                self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
-            else:
-                self.call_from_thread(self.notify, f"Dispatched to {wt_id}", timeout=3)
-                # Auto-select the new worktree
-                self.call_from_thread(self._select_worktree, wt_id)
+            try:
+                from lane.cli import dispatch_task_headless
+                wt_id, err = dispatch_task_headless(self.root, description)
+                if err:
+                    self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+                else:
+                    self.call_from_thread(self.notify, f"Dispatched to {wt_id}", timeout=3)
+                    self.call_from_thread(self._select_worktree, wt_id)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=8)
 
         Thread(target=_dispatch, daemon=True).start()
 
