@@ -195,7 +195,7 @@ def task(
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
 
-    tmux_session = f"lane:{claimed_id}"
+    tmux_session = f"lane-{claimed_id}"
 
     with with_state_lock(root) as state:
         for wt in state.worktrees:
@@ -707,7 +707,7 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
-    tmux_session = f"lane:{claimed_id}"
+    tmux_session = f"lane-{claimed_id}"
 
     with with_state_lock(root) as state:
         for wt in state.worktrees:
