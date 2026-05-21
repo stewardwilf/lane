@@ -101,6 +101,9 @@ def init(
             last_released_at=now_iso(),
         ))
 
+    # Copy Claude settings to each worktree so permissions carry over
+    _sync_claude_settings(root, worktrees)
+
     if setup_script:
         for wt in worktrees:
             wt_abs = str(root / wt.path)
@@ -465,6 +468,9 @@ def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tup
     if wt.status == "idle":
         return (wt_id, f"{wt_id} is idle — use `lane task` to dispatch")
 
+    # Sync Claude settings before spawning
+    _sync_claude_settings(root, [wt])
+
     wt_abs = str(root / wt.path)
     log_file = os.path.join(str(root), state.config.logs_dir, f"{wt_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -499,6 +505,37 @@ def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tup
             w.pid = pid
 
     return (wt_id, None)
+
+
+def _sync_claude_settings(root: Path, worktrees: list[Worktree]) -> None:
+    """Copy .claude/ settings from the main repo into each worktree.
+
+    This ensures permissions, MCP config, and other settings carry over
+    so Claude doesn't re-ask for every tool approval.
+    """
+    import shutil
+    claude_dir = root / ".claude"
+    if not claude_dir.exists():
+        return
+
+    for wt in worktrees:
+        wt_abs = root / wt.path
+        wt_claude = wt_abs / ".claude"
+        wt_claude.mkdir(parents=True, exist_ok=True)
+        # Copy settings files (not the entire directory — avoid caches)
+        for name in ["settings.json", "settings.local.json", "CLAUDE.md"]:
+            src = claude_dir / name
+            if src.exists():
+                shutil.copy2(src, wt_claude / name)
+
+    # Also copy project-level CLAUDE.md from root
+    claude_md = root / "CLAUDE.md"
+    if claude_md.exists():
+        for wt in worktrees:
+            wt_abs = root / wt.path
+            dst = wt_abs / "CLAUDE.md"
+            if not dst.exists():
+                shutil.copy2(claude_md, dst)
 
 
 def _find_worktree(state: PoolState, wt_id: str) -> Worktree:
@@ -738,6 +775,9 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     wt_abs = str(root / claimed_wt.path)
     remote = state.config.remote
     base_ref = f"{remote}/{state.config.base_branch}"
+
+    # Sync Claude settings so permissions carry over
+    _sync_claude_settings(root, [claimed_wt])
 
     try:
         git_ops.fetch(remote, cwd=wt_abs)
