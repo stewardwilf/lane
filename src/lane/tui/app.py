@@ -172,6 +172,7 @@ class LaneDashboard(App):
     """
 
     BINDINGS = [
+        Binding("tab", "toggle_focus", "Tab: switch mode", show=True),
         Binding("a", "attach", "Attach", show=True),
         Binding("c", "continue_task", "Continue", show=True),
         Binding("s", "stop", "Stop", show=True),
@@ -186,8 +187,9 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
-    _waiting_input: set[str]  # worktree IDs currently waiting for input
-    _notified_input: set[str]  # worktree IDs we've already sent a notification for
+    _waiting_input: set[str]
+    _notified_input: set[str]
+    _claude_focus: bool  # True = keys go to Claude, False = navigate dashboard
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
@@ -195,6 +197,7 @@ class LaneDashboard(App):
         self._table_initialized = False
         self._waiting_input = set()
         self._notified_input = set()
+        self._claude_focus = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -335,14 +338,18 @@ class LaneDashboard(App):
         header = self.query_one("#pane-header", Static)
         if not wt:
             header.update(" [dim]select a worktree[/dim]")
-        elif wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach (ctrl+d back) · [bold]i[/bold] reply[/dim]")
+            return
+
+        mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
+
+        if wt.status == "busy":
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· Tab switch · a attach · i reply[/dim]")
         elif wt.status == "done":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]i[/bold] continue · [bold]r[/bold] release[/dim]")
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· i continue · r release[/dim]")
         elif wt.status == "idle":
-            header.update(f" [bold]{wt.id}[/bold] [dim]· idle · [bold]i[/bold] or [bold]n[/bold] to dispatch[/dim]")
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] [dim]· idle · i or n to dispatch[/dim]")
         else:
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· {wt.status}[/dim]")
 
     def _update_reply_hint(self, wt: Worktree | None) -> None:
         hint = self.query_one("#reply-hint", Static)
@@ -403,28 +410,56 @@ class LaneDashboard(App):
             self._waiting_input.discard(wt_id)
             self._notified_input.discard(wt_id)
 
-    # ── Passthrough keys to Claude ──────────────────────────────
+    # ── Focus mode + key passthrough ────────────────────────────
+
+    def action_toggle_focus(self) -> None:
+        self._claude_focus = not self._claude_focus
+        mode = "Claude" if self._claude_focus else "Dashboard"
+        self.notify(f"Mode: {mode} — Tab to switch", timeout=2)
+        self._update_mode_indicator()
+
+    def _update_mode_indicator(self) -> None:
+        header = self.query_one("#pane-header", Static)
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt:
+            return
+
+        mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
+
+        if wt.status == "busy":
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· Tab to switch[/dim]")
+        elif wt.status == "done":
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''}")
+        else:
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold]")
 
     def on_key(self, event) -> None:
-        """Forward 1/2/3/y/Enter/Escape to the tmux session when no input is focused."""
+        """In Claude mode, forward keys to the tmux session. In Dashboard mode, normal navigation."""
         if isinstance(self.focused, Input):
-            return  # Let input widgets handle their own keys
-
-        PASSTHROUGH = {
-            "1": "1", "2": "2", "3": "3",
-            "y": "y",
-            "enter": "Enter",
-            "escape": "Escape",
-        }
-
-        tmux_key = PASSTHROUGH.get(event.key)
-        if not tmux_key:
             return
+
+        # Keys that always pass through to Claude when it's busy (regardless of mode)
+        ALWAYS_PASSTHROUGH = {"1": "1", "2": "2", "3": "3", "y": "y"}
+
+        # Keys that only pass through in Claude focus mode
+        FOCUS_PASSTHROUGH = {
+            "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+            "enter": "Enter", "escape": "Escape",
+        }
 
         if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
-        if wt and wt.status == "busy" and wt.tmux_session:
+        if not wt or wt.status != "busy" or not wt.tmux_session:
+            return
+
+        tmux_key = ALWAYS_PASSTHROUGH.get(event.key)
+        if not tmux_key and self._claude_focus:
+            tmux_key = FOCUS_PASSTHROUGH.get(event.key)
+
+        if tmux_key:
             subprocess.run(
                 ["tmux", "send-keys", "-t", wt.tmux_session, tmux_key],
                 capture_output=True, check=False,
