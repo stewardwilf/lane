@@ -50,7 +50,7 @@ class StatusBar(Static):
 
         parts = [
             f" [bold]lane[/bold]  ·  pool={total}",
-            f"[blue]busy={busy}[/blue]",
+            f"[cyan]busy={busy}[/cyan]",
             f"[green]idle={idle}[/green]",
         ]
         if done:
@@ -325,7 +325,7 @@ class LaneDashboard(App):
         if not wt:
             header.update(" [dim]select a worktree[/dim]")
         elif wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach · [bold]i[/bold] reply[/dim]")
+            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]a[/bold] attach (ctrl+d back) · [bold]i[/bold] reply[/dim]")
         elif wt.status == "done":
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· [bold]i[/bold] continue · [bold]r[/bold] release[/dim]")
         elif wt.status == "idle":
@@ -476,7 +476,10 @@ class LaneDashboard(App):
             self.notify(f"{wt.id} is not running", severity="warning")
             return
         with self.suspend():
-            os.system(f"tmux attach-session -t {wt.tmux_session}")
+            # Bind Ctrl+D to detach for easy return to dashboard
+            os.system(f"tmux bind-key -T root C-d detach 2>/dev/null; tmux attach-session -t {wt.tmux_session}")
+            # Unbind after detach so it doesn't linger
+            os.system(f"tmux unbind-key -T root C-d 2>/dev/null")
 
     def action_stop(self) -> None:
         if not self._selected_wt_id or not self._state:
@@ -555,7 +558,7 @@ def _elapsed(started_at: str | None) -> str:
 def _status_styled(status: str) -> str:
     return {
         "idle": "[green]IDLE[/green]",
-        "busy": "[blue]BUSY[/blue]",
+        "busy": "[cyan]BUSY[/cyan]",
         "done": "[yellow]DONE[/yellow]",
         "claiming": "[dim]CLAIM[/dim]",
         "error": "[red]ERROR[/red]",
