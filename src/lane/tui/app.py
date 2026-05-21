@@ -491,18 +491,12 @@ class LaneDashboard(App):
 
         # In Claude mode, forward printable characters too (typing)
         if not tmux_key and self._claude_focus and event.is_printable and event.character:
-            subprocess.run(
-                ["tmux", "send-keys", "-t", wt.tmux_session, "-l", event.character],
-                capture_output=True, check=False,
-            )
+            _send_key_async(wt.tmux_session, "-l", event.character)
             event.prevent_default()
             return
 
         if tmux_key:
-            subprocess.run(
-                ["tmux", "send-keys", "-t", wt.tmux_session, tmux_key],
-                capture_output=True, check=False,
-            )
+            _send_key_async(wt.tmux_session, tmux_key)
             event.prevent_default()
 
     # ── Actions ─────────────────────────────────────────────────
@@ -638,6 +632,15 @@ def _capture_tmux_pane(session_name: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _send_key_async(session_name: str, *args: str) -> None:
+    """Fire-and-forget tmux send-keys — no blocking."""
+    subprocess.Popen(
+        ["tmux", "send-keys", "-t", session_name, *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _send_to_tmux(session_name: str, text: str) -> None:
