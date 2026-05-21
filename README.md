@@ -123,7 +123,9 @@ The bottom-left panel shows connected MCP servers with live status, refreshed ev
 
 Sources: project `.mcp.json`, per-project Claude config, claude.ai integrations, installed plugins.
 
-## Worktree lifecycle
+## How it works
+
+### Worktree lifecycle
 
 ```
 IDLE ──[n/i dispatch]──> BUSY ──[Claude exits]──> DONE ──[i/c continue]──> BUSY
@@ -135,6 +137,14 @@ IDLE ──[n/i dispatch]──> BUSY ──[Claude exits]──> DONE ──[i/
 3. The dashboard uses **`tmux capture-pane`** to show exactly what Claude's terminal looks like — proper formatting, scrollable history.
 4. When Claude exits, the worktree moves to **DONE**. Branch and changes are preserved. Continue or release.
 5. **`lane release`** auto-commits uncommitted work, resets to holding branch, returns to idle.
+
+### Permissions
+
+Lane automatically syncs your `.claude/settings.json`, `settings.local.json`, and `CLAUDE.md` into each worktree — on init, dispatch, and continue. Your permission allow-list carries over so Claude doesn't re-prompt for file reads, bash commands, etc.
+
+### Terminal preview
+
+The right pane uses `tmux capture-pane` to show exactly what Claude's terminal looks like, updated every 500ms. This is a read-only preview — press **`` ` ``** for Claude mode to interact, or **`a`** to attach for the full native experience.
 
 ## Configuration
 
