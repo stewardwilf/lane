@@ -22,12 +22,14 @@ from lane.recovery import check_stale_workers
 from lane.runner import kill_agent
 
 
-LOGO = """\
-[bold]┌─┬─┐[/bold]
-[bold]│[blue]●[/blue]│ │[/bold]  [bold]lane[/bold] [dim]worktree pool[/dim]
-[bold]├─┼─┤[/bold]
-[bold]│ │ │[/bold]
-[bold]└─┴─┘[/bold]\
+ACCENT = "#7C6FF7"
+ACCENT_MID = "#9B8FFF"
+ACCENT_LIGHT = "#BDB2FF"
+
+LOGO = f"""\
+[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]
+[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]  [bold]lane[/bold]  [dim italic]worktree pool[/dim italic]
+[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]\
 """
 
 
@@ -49,14 +51,13 @@ class StatusBar(Static):
         total = len(state.worktrees)
 
         parts = [
-            f" [bold]lane[/bold]  ·  pool={total}",
-            f"[cyan]busy={busy}[/cyan]",
-            f"[green]idle={idle}[/green]",
+            f"[bold #7C6FF7]●[/bold #7C6FF7] busy {busy}",
+            f"[bold #00B894]●[/bold #00B894] idle {idle}",
         ]
         if done:
-            parts.append(f"[yellow]done={done}[/yellow]")
-        parts.append(f"·  base={state.config.base_branch}")
-        self.update("  ".join(parts))
+            parts.append(f"[bold #FDCB6E]●[/bold #FDCB6E] done {done}")
+        parts.append(f"[dim]·  {state.config.base_branch}[/dim]")
+        self.update("   ".join(parts))
 
 
 class DetailPanel(Static):
@@ -70,11 +71,9 @@ class DetailPanel(Static):
 
         elapsed = _elapsed(wt.started_at) if wt.started_at else "—"
         lines = [
-            f"[dim]selected[/dim] · [bold]{wt.id}[/bold]",
-            f"[dim]branch[/dim]   {wt.branch or '—'}",
-            f"[dim]task[/dim]     {wt.task or '—'}",
-            f"[dim]status[/dim]   {_status_styled(wt.status)}",
-            f"[dim]elapsed[/dim]  {elapsed}",
+            f"[bold #9B8FFF]{wt.id}[/bold #9B8FFF]  {_status_styled(wt.status)}  [dim]{elapsed}[/dim]",
+            f"[dim]branch[/dim]  {wt.branch or '—'}",
+            f"[dim]task[/dim]    {wt.task or '—'}",
         ]
 
         if not self._mcp_loaded and root:
@@ -148,10 +147,10 @@ class LaneDashboard(App):
     #header-bar {
         height: 5; padding: 0 2;
         background: $surface;
-        border-bottom: solid $primary-background;
+        border-bottom: solid #7C6FF7;
         layout: horizontal;
     }
-    #logo { width: auto; padding: 0 1; }
+    #logo { width: auto; padding: 0 2; }
     StatusBar { height: 5; padding: 1 2; content-align: left middle; }
     #main { layout: horizontal; height: 1fr; }
     #left {
@@ -356,7 +355,7 @@ class LaneDashboard(App):
             header.update(" [dim]select a worktree[/dim]")
             return
 
-        mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
+        mode_badge = "[bold white on #6C5CE7] CLAUDE [/bold white on #6C5CE7]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
 
         if wt.status == "busy":
             header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· ` switch · a attach · i reply[/dim]")
@@ -412,7 +411,7 @@ class LaneDashboard(App):
             if self._table_initialized:
                 table = self.query_one(WorktreeTable)
                 try:
-                    table.update_cell(wt_id, "status", Text.from_markup("[bold red on dark_red] INPUT [/bold red on dark_red]"), update_width=False)
+                    table.update_cell(wt_id, "status", Text.from_markup("[bold white on #FF6B6B] INPUT [/bold white on #FF6B6B]"), update_width=False)
                 except Exception:
                     pass
             # Send system notification (once per prompt)
@@ -449,7 +448,7 @@ class LaneDashboard(App):
         if not wt:
             return
 
-        mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
+        mode_badge = "[bold white on #6C5CE7] CLAUDE [/bold white on #6C5CE7]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
 
         if wt.status == "busy":
             header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· ` to switch[/dim]")
@@ -721,9 +720,9 @@ def _get_mcp_servers(root: Path) -> str | None:
 
 def _status_styled(status: str) -> str:
     return {
-        "idle": "[green]IDLE[/green]",
-        "busy": "[cyan]BUSY[/cyan]",
-        "done": "[yellow]DONE[/yellow]",
-        "claiming": "[dim]CLAIM[/dim]",
-        "error": "[red]ERROR[/red]",
+        "idle": "[#00B894]● IDLE[/#00B894]",
+        "busy": "[#7C6FF7]● BUSY[/#7C6FF7]",
+        "done": "[#FDCB6E]● DONE[/#FDCB6E]",
+        "claiming": "[dim]○ CLAIM[/dim]",
+        "error": "[#FF6B6B]● ERROR[/#FF6B6B]",
     }.get(status, status)
