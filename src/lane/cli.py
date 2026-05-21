@@ -411,6 +411,12 @@ def destroy(
         console.print(f"  Removing worktree [bold]{wt.id}[/bold]...")
         git_ops.remove_worktree(wt_abs, cwd=root, force=True)
 
+    # Prune stale worktree refs and delete holding branches
+    git_ops.run_git(["worktree", "prune"], cwd=root, check=False)
+    for wt in state.worktrees:
+        branch = f"{state.config.holding_branch}/{wt.id}"
+        git_ops.run_git(["branch", "-D", branch], cwd=root, check=False)
+
     import shutil
     ld = lane_dir(root)
     if ld.exists():
