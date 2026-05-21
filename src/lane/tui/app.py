@@ -12,7 +12,7 @@ from threading import Thread
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Footer, Static, DataTable, Input, Label
@@ -75,16 +75,30 @@ class DetailPanel(Static):
         self.update("\n".join(lines))
 
 
-class TerminalView(Static):
-    """Shows a live snapshot of the tmux pane with scrollback."""
+class TerminalView(VerticalScroll):
+    """Scrollable view of the tmux pane with history."""
 
     DEFAULT_CSS = """
     TerminalView {
         height: 1fr;
         padding: 0 1;
-        overflow-y: scroll;
+    }
+    #term-content {
+        width: 1fr;
     }
     """
+
+    _was_at_bottom: bool = True
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="term-content")
+
+    def update(self, content) -> None:
+        """Update content, auto-scrolling only if already at bottom."""
+        self._was_at_bottom = self.scroll_offset.y >= (self.virtual_size.height - self.size.height - 2)
+        self.query_one("#term-content", Static).update(content)
+        if self._was_at_bottom:
+            self.call_later(self.scroll_end, animate=False)
 
 
 class ReplyInput(Input):
@@ -166,7 +180,7 @@ class LaneDashboard(App):
         background: $surface;
         border-bottom: solid $primary-background;
     }
-    TerminalView { height: 1fr; padding: 0 1; }
+    TerminalView { height: 1fr; }
     #reply-bar {
         height: auto;
         border-top: solid $primary-background;
