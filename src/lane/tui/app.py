@@ -399,6 +399,12 @@ class LaneDashboard(App):
                     table.update_cell(wt_id, "status", Text.from_markup("[bold red on dark_red] INPUT [/bold red on dark_red]"), update_width=False)
                 except Exception:
                     pass
+            # Auto-switch to Claude mode if this is the selected worktree
+            if wt_id == self._selected_wt_id and not self._claude_focus:
+                self._claude_focus = True
+                self.query_one(TerminalView).can_focus = True
+                self.query_one(TerminalView).focus()
+                self._update_mode_indicator()
             # Send system notification (once per prompt)
             if wt_id not in self._notified_input:
                 self._notified_input.add(wt_id)
@@ -414,6 +420,13 @@ class LaneDashboard(App):
 
     def action_toggle_focus(self) -> None:
         self._claude_focus = not self._claude_focus
+        if self._claude_focus:
+            # Focus the terminal view so DataTable doesn't eat arrow keys
+            self.query_one(TerminalView).can_focus = True
+            self.query_one(TerminalView).focus()
+        else:
+            self.query_one(TerminalView).can_focus = False
+            self.query_one(WorktreeTable).focus()
         mode = "Claude" if self._claude_focus else "Dashboard"
         self.notify(f"Mode: {mode} — Tab to switch", timeout=2)
         self._update_mode_indicator()
@@ -446,7 +459,7 @@ class LaneDashboard(App):
         # Keys that only pass through in Claude focus mode
         FOCUS_PASSTHROUGH = {
             "up": "Up", "down": "Down", "left": "Left", "right": "Right",
-            "enter": "Enter", "escape": "Escape",
+            "enter": "Enter", "escape": "Escape", "space": "Space",
         }
 
         if not self._selected_wt_id or not self._state:
