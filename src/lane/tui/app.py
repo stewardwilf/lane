@@ -149,11 +149,10 @@ class LaneDashboard(App):
     }
     WorktreeTable { height: 1fr; }
     #mcp-panel {
-        height: auto; max-height: 6;
-        padding: 0 2;
+        height: auto; max-height: 5;
+        padding: 1 2;
         border-top: solid $primary-background;
         background: $surface;
-        overflow-y: auto;
     }
     DetailPanel {
         height: auto; max-height: 8;
@@ -750,13 +749,17 @@ def _get_mcp_servers(root: Path) -> str | None:
     if not all_servers:
         return None
 
-    parts = []
-    for name, status in all_servers.items():
-        if status == "connected":
-            parts.append(f"[green]●[/green] [dim]{name}[/dim]")
-        else:
-            parts.append(f"[yellow]△[/yellow] [dim]{name}[/dim]")
-    return "  ".join(parts)
+    connected = [n for n, s in all_servers.items() if s == "connected"]
+    needs_auth = [n for n, s in all_servers.items() if s == "auth"]
+
+    lines = []
+    if connected:
+        names = ", ".join(connected)
+        lines.append(f"[green]●[/green] [dim]connected[/dim]  {names}")
+    if needs_auth:
+        names = ", ".join(needs_auth)
+        lines.append(f"[yellow]△[/yellow] [dim]needs auth[/dim] {names}")
+    return "\n".join(lines)
 
 
 def _status_styled(status: str) -> str:
