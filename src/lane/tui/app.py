@@ -149,10 +149,11 @@ class LaneDashboard(App):
     }
     WorktreeTable { height: 1fr; }
     #mcp-panel {
-        height: auto; max-height: 4;
+        height: auto; max-height: 6;
         padding: 0 2;
         border-top: solid $primary-background;
         background: $surface;
+        overflow-y: auto;
     }
     DetailPanel {
         height: auto; max-height: 8;
@@ -686,18 +687,29 @@ def _system_notify(title: str, message: str) -> None:
 
 
 def _get_mcp_servers(root: Path) -> str | None:
-    """Read MCP server names from all Claude config sources."""
+    """Read MCP servers with connection status from Claude config."""
     import json
-    servers = []
 
     home = Path.home()
+    all_servers: dict[str, str] = {}  # name -> "connected" | "auth"
+
+    # Load the needs-auth cache — servers listed here need authentication
+    needs_auth: set[str] = set()
+    auth_cache = home / ".claude" / "mcp-needs-auth-cache.json"
+    if auth_cache.exists():
+        try:
+            data = json.loads(auth_cache.read_text())
+            needs_auth = set(data.keys())
+        except Exception:
+            pass
 
     # 1. Project-level .mcp.json
     mcp_json = root / ".mcp.json"
     if mcp_json.exists():
         try:
             data = json.loads(mcp_json.read_text())
-            servers.extend(data.get("mcpServers", {}).keys())
+            for name in data.get("mcpServers", {}):
+                all_servers[name] = "connected"
         except Exception:
             pass
 
@@ -706,40 +718,41 @@ def _get_mcp_servers(root: Path) -> str | None:
     if claude_json.exists():
         try:
             data = json.loads(claude_json.read_text())
-            # Match this project's path in the projects dict
             root_str = str(root)
             for proj_key, proj_val in data.get("projects", {}).items():
                 if isinstance(proj_val, dict) and root_str in proj_key:
-                    servers.extend(proj_val.get("mcpServers", {}).keys())
+                    for name in proj_val.get("mcpServers", {}):
+                        all_servers[name] = "connected"
+
             # Claude.ai integrations
-            for name in data.get("claudeAiMcpEverConnected", []):
-                short = name.replace("claude.ai ", "")
-                servers.append(short)
+            for full_name in data.get("claudeAiMcpEverConnected", []):
+                status = "auth" if full_name in needs_auth else "connected"
+                short = full_name.replace("claude.ai ", "")
+                all_servers[short] = status
         except Exception:
             pass
 
-    # 3. Plugins from global settings
-    for path in [home / ".claude" / "settings.json"]:
-        if path.exists():
-            try:
-                data = json.loads(path.read_text())
-                for plugin, enabled in data.get("enabledPlugins", {}).items():
-                    if enabled:
-                        servers.append(plugin.split("@")[0])
-            except Exception:
-                pass
+    # 3. Plugins
+    settings = home / ".claude" / "settings.json"
+    if settings.exists():
+        try:
+            data = json.loads(settings.read_text())
+            for plugin, enabled in data.get("enabledPlugins", {}).items():
+                if enabled:
+                    all_servers[plugin.split("@")[0]] = "connected"
+        except Exception:
+            pass
 
-    if not servers:
+    if not all_servers:
         return None
 
-    # Deduplicate preserving order
-    seen = set()
-    unique = []
-    for s in servers:
-        if s not in seen:
-            seen.add(s)
-            unique.append(s)
-    return "  ".join(f"[dim]{s}[/dim]" for s in unique)
+    parts = []
+    for name, status in all_servers.items():
+        if status == "connected":
+            parts.append(f"[green]●[/green] [dim]{name}[/dim]")
+        else:
+            parts.append(f"[yellow]△[/yellow] [dim]{name}[/dim]")
+    return "  ".join(parts)
 
 
 def _status_styled(status: str) -> str:
