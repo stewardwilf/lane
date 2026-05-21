@@ -186,11 +186,15 @@ class LaneDashboard(App):
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
+    _waiting_input: set[str]  # worktree IDs currently waiting for input
+    _notified_input: set[str]  # worktree IDs we've already sent a notification for
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
         self.root = root
         self._table_initialized = False
+        self._waiting_input = set()
+        self._notified_input = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -300,6 +304,13 @@ class LaneDashboard(App):
                     self._table_initialized = False
                     return
 
+        # Check all busy worktrees for input prompts (not just selected)
+        for wt in state.worktrees:
+            if wt.status == "busy" and wt.tmux_session and wt.id != self._selected_wt_id:
+                content = _capture_tmux_pane(wt.tmux_session)
+                if content:
+                    self._update_input_alert(wt.id, _needs_user_input(content))
+
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
@@ -353,6 +364,9 @@ class LaneDashboard(App):
             content = _capture_tmux_pane(wt.tmux_session)
             if content is not None:
                 view.update(Text.from_ansi(content))
+                # Check if Claude is waiting for input
+                needs_input = _needs_user_input(content)
+                self._update_input_alert(wt.id, needs_input)
             return
 
         if wt.status == "done":
@@ -364,6 +378,30 @@ class LaneDashboard(App):
             return
 
         view.update(f"[dim]{wt.status}[/dim]")
+
+    # ── Input detection ────────────────────────────────────────
+
+    def _update_input_alert(self, wt_id: str, needs_input: bool) -> None:
+        """Track and notify when a worktree needs user input."""
+        if needs_input:
+            self._waiting_input.add(wt_id)
+            # Update the status cell to show waiting indicator
+            if self._table_initialized:
+                table = self.query_one(WorktreeTable)
+                try:
+                    table.update_cell(wt_id, "status", Text.from_markup("[bold red on dark_red] INPUT [/bold red on dark_red]"), update_width=False)
+                except Exception:
+                    pass
+            # Send system notification (once per prompt)
+            if wt_id not in self._notified_input:
+                self._notified_input.add(wt_id)
+                wt = next((w for w in self._state.worktrees if w.id == wt_id), None) if self._state else None
+                task_name = wt.task if wt else wt_id
+                _system_notify(f"lane · {wt_id}", f"Needs input: {task_name}")
+                self.bell()
+        else:
+            self._waiting_input.discard(wt_id)
+            self._notified_input.discard(wt_id)
 
     # ── Passthrough keys to Claude ──────────────────────────────
 
@@ -553,6 +591,38 @@ def _elapsed(started_at: str | None) -> str:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     except Exception:
         return "—"
+
+
+def _needs_user_input(content: str) -> bool:
+    """Check if the tmux pane content shows Claude waiting for user input."""
+    # Strip ANSI for pattern matching
+    plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+    plain = re.sub(r'\x1b\][^\x07]*\x07', '', plain)
+
+    indicators = [
+        r'Do you want to proceed\?',
+        r'Select .+:',
+        r'›\s*\d+\.',                    # Selected option indicator
+        r'❯\s*\d+\.',
+        r'\)\s*\d+\.',                    # ) 1. Yes
+        r'Esc to cancel',
+        r'Tab to amend',
+        r'Enter to continue',
+        r'\[Y/n\]',
+        r'\[y/N\]',
+    ]
+    return any(re.search(p, plain) for p in indicators)
+
+
+def _system_notify(title: str, message: str) -> None:
+    """Send a macOS system notification."""
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+            capture_output=True, check=False, timeout=3,
+        )
+    except Exception:
+        pass
 
 
 def _status_styled(status: str) -> str:
