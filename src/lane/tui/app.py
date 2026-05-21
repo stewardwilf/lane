@@ -227,12 +227,16 @@ class LaneDashboard(App):
         self._refresh_state()
         self._poll_timer = self.set_interval(0.5, self._refresh_state)
         self._bg_check_timer = self.set_interval(3.0, self._check_background_worktrees)
-        # Load MCP servers once
+        self._mcp_timer = self.set_interval(10.0, self._refresh_mcp)
+        self._refresh_mcp()
+
+    def _refresh_mcp(self) -> None:
         mcp = _get_mcp_servers(self.root)
+        panel = self.query_one("#mcp-panel", Static)
         if mcp:
-            self.query_one("#mcp-panel", Static).update(f"[dim]mcp[/dim] {mcp}")
+            panel.update(f"[dim]mcp[/dim] {mcp}")
         else:
-            self.query_one("#mcp-panel", Static).update("[dim]mcp[/dim] [dim]none[/dim]")
+            panel.update("[dim]mcp[/dim] [dim]none[/dim]")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "reply-input":
