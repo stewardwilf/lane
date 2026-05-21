@@ -60,7 +60,10 @@ class StatusBar(Static):
 
 
 class DetailPanel(Static):
-    def update_from_worktree(self, wt: Worktree | None) -> None:
+    _mcp_cache: str | None = None
+    _mcp_loaded: bool = False
+
+    def update_from_worktree(self, wt: Worktree | None, root: Path | None = None) -> None:
         if wt is None:
             self.update("No worktree selected")
             return
@@ -73,6 +76,14 @@ class DetailPanel(Static):
             f"[dim]status[/dim]   {_status_styled(wt.status)}",
             f"[dim]elapsed[/dim]  {elapsed}",
         ]
+
+        if not self._mcp_loaded and root:
+            self._mcp_cache = _get_mcp_servers(root)
+            self._mcp_loaded = True
+
+        if self._mcp_cache:
+            lines.append(f"[dim]mcp[/dim]     {self._mcp_cache}")
+
         self.update("\n".join(lines))
 
 
@@ -172,7 +183,7 @@ class LaneDashboard(App):
     """
 
     BINDINGS = [
-        Binding("tab", "toggle_focus", "Tab: switch mode", show=True),
+        Binding("grave_accent", "toggle_focus", "` switch mode", show=True),
         Binding("a", "attach", "Attach", show=True),
         Binding("c", "continue_task", "Continue", show=True),
         Binding("s", "stop", "Stop", show=True),
@@ -311,7 +322,7 @@ class LaneDashboard(App):
 
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
-            self.query_one(DetailPanel).update_from_worktree(wt)
+            self.query_one(DetailPanel).update_from_worktree(wt, self.root)
             self._update_pane_header(wt)
             self._update_reply_hint(wt)
             self._refresh_terminal_view(wt)
@@ -334,7 +345,7 @@ class LaneDashboard(App):
             self._selected_wt_id = new_id
             if self._state:
                 wt = next((w for w in self._state.worktrees if w.id == new_id), None)
-                self.query_one(DetailPanel).update_from_worktree(wt)
+                self.query_one(DetailPanel).update_from_worktree(wt, self.root)
                 self._update_pane_header(wt)
                 self._update_reply_hint(wt)
                 self._refresh_terminal_view(wt)
@@ -348,7 +359,7 @@ class LaneDashboard(App):
         mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
 
         if wt.status == "busy":
-            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· Tab switch · a attach · i reply[/dim]")
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· ` switch · a attach · i reply[/dim]")
         elif wt.status == "done":
             header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· i continue · r release[/dim]")
         elif wt.status == "idle":
@@ -433,7 +444,7 @@ class LaneDashboard(App):
             self.query_one(TerminalView).can_focus = False
             self.query_one(WorktreeTable).focus()
         mode = "Claude" if self._claude_focus else "Dashboard"
-        self.notify(f"Mode: {mode} — Tab to switch", timeout=2)
+        self.notify(f"Mode: {mode} — ` to switch", timeout=2)
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
@@ -447,7 +458,7 @@ class LaneDashboard(App):
         mode_badge = "[bold white on blue] CLAUDE [/bold white on blue]" if self._claude_focus else "[bold white on #444444] DASHBOARD [/bold white on #444444]"
 
         if wt.status == "busy":
-            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· Tab to switch[/dim]")
+            header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· ` to switch[/dim]")
         elif wt.status == "done":
             header.update(f" {mode_badge} [bold]{wt.id}[/bold] · {wt.task or ''}")
         else:
@@ -465,6 +476,7 @@ class LaneDashboard(App):
         FOCUS_PASSTHROUGH = {
             "up": "Up", "down": "Down", "left": "Left", "right": "Right",
             "enter": "Enter", "escape": "Escape", "space": "Space",
+            "tab": "Tab", "shift+tab": "BTab",
         }
 
         if not self._selected_wt_id or not self._state:
@@ -676,6 +688,41 @@ def _system_notify(title: str, message: str) -> None:
         )
     except Exception:
         pass
+
+
+def _get_mcp_servers(root: Path) -> str | None:
+    """Read MCP server names from project .mcp.json and ~/.claude configs."""
+    import json
+    servers = []
+
+    # Project-level .mcp.json
+    mcp_json = root / ".mcp.json"
+    if mcp_json.exists():
+        try:
+            data = json.loads(mcp_json.read_text())
+            servers.extend(data.get("mcpServers", {}).keys())
+        except Exception:
+            pass
+
+    # Claude settings
+    home = Path.home()
+    for path in [home / ".claude" / "settings.json", home / ".claude" / "settings.local.json"]:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+                servers.extend(data.get("mcpServers", {}).keys())
+                # Plugins that act as MCP
+                for plugin in data.get("enabledPlugins", {}):
+                    if data["enabledPlugins"][plugin]:
+                        name = plugin.split("@")[0]
+                        if name not in servers:
+                            servers.append(name)
+            except Exception:
+                pass
+
+    if not servers:
+        return None
+    return " ".join(f"[dim]{s}[/dim]" for s in dict.fromkeys(servers))
 
 
 def _status_styled(status: str) -> str:
