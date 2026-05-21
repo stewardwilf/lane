@@ -184,12 +184,13 @@ class LaneDashboard(App):
 
     root: Path
     _poll_timer: Timer | None = None
+    _bg_check_timer: Timer | None = None
     _selected_wt_id: str | None = None
     _state: PoolState | None = None
     _table_initialized: bool = False
     _waiting_input: set[str]
     _notified_input: set[str]
-    _claude_focus: bool  # True = keys go to Claude, False = navigate dashboard
+    _claude_focus: bool
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
@@ -218,6 +219,7 @@ class LaneDashboard(App):
     def on_mount(self) -> None:
         self._refresh_state()
         self._poll_timer = self.set_interval(0.5, self._refresh_state)
+        self._bg_check_timer = self.set_interval(3.0, self._check_background_worktrees)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "reply-input":
@@ -307,19 +309,22 @@ class LaneDashboard(App):
                     self._table_initialized = False
                     return
 
-        # Check all busy worktrees for input prompts (not just selected)
-        for wt in state.worktrees:
-            if wt.status == "busy" and wt.tmux_session and wt.id != self._selected_wt_id:
-                content = _capture_tmux_pane(wt.tmux_session)
-                if content:
-                    self._update_input_alert(wt.id, _needs_user_input(content))
-
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
             self.query_one(DetailPanel).update_from_worktree(wt)
             self._update_pane_header(wt)
             self._update_reply_hint(wt)
             self._refresh_terminal_view(wt)
+
+    def _check_background_worktrees(self) -> None:
+        """Slow poll: check non-selected busy worktrees for input prompts."""
+        if not self._state:
+            return
+        for wt in self._state.worktrees:
+            if wt.status == "busy" and wt.tmux_session and wt.id != self._selected_wt_id:
+                content = _capture_tmux_pane(wt.tmux_session)
+                if content:
+                    self._update_input_alert(wt.id, _needs_user_input(content))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key and event.row_key.value:
