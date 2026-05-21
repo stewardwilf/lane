@@ -26,11 +26,7 @@ ACCENT = "#7C6FF7"
 ACCENT_MID = "#9B8FFF"
 ACCENT_LIGHT = "#BDB2FF"
 
-LOGO = f"""\
-[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]
-[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]  [bold]lane[/bold]  [dim italic]worktree pool[/dim italic]
-[{ACCENT}]██[/{ACCENT}] [{ACCENT_MID}]██[/{ACCENT_MID}] [{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]\
-"""
+LOGO = f"[{ACCENT}]█[/{ACCENT}][{ACCENT_MID}]█[/{ACCENT_MID}][{ACCENT_LIGHT}]█[/{ACCENT_LIGHT}] [bold]lane[/bold]"
 
 
 class WorktreeTable(DataTable):
@@ -148,13 +144,14 @@ class LaneDashboard(App):
     CSS = """
     Screen { layout: vertical; }
     #header-bar {
-        height: 5; padding: 0 2;
+        height: 3; padding: 0 2;
         background: $surface;
         border-bottom: solid #7C6FF7;
         layout: horizontal;
+        align: left middle;
     }
-    #logo { width: auto; padding: 0 2; }
-    StatusBar { height: 5; padding: 1 2; content-align: left middle; }
+    #logo { width: auto; padding: 0 2 0 0; }
+    StatusBar { padding: 0 2; content-align: left middle; }
     #main { layout: horizontal; height: 1fr; }
     #left {
         width: 1fr; max-width: 64;
@@ -176,7 +173,7 @@ class LaneDashboard(App):
     }
     #right { width: 2fr; layout: vertical; }
     #pane-header {
-        height: 3; padding: 1 2;
+        height: 1; padding: 0 2;
         background: $surface;
         border-bottom: solid $primary-background;
     }
