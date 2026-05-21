@@ -373,8 +373,15 @@ class LaneDashboard(App):
 
     # ── Send keys to Claude ─────────────────────────────────────
 
+    def _input_has_focus(self) -> bool:
+        """Check if any text input widget currently has focus."""
+        focused = self.focused
+        return isinstance(focused, Input)
+
     def _send_key(self, key: str) -> None:
         """Send a raw key to the selected worktree's tmux session."""
+        if self._input_has_focus():
+            return  # Don't intercept input widget keystrokes
         if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
