@@ -479,15 +479,27 @@ class LaneDashboard(App):
         if isinstance(self.focused, Input):
             return
 
-        # Keys that always pass through to Claude when it's busy (regardless of mode)
-        ALWAYS_PASSTHROUGH = {"1": "1", "2": "2", "3": "3", "y": "y"}
+        # In Dashboard mode, don't intercept any navigation keys
+        if not self._claude_focus:
+            # Only intercept 1/2/3/y for quick prompt responses on busy worktrees
+            QUICK_KEYS = {"1": "1", "2": "2", "3": "3", "y": "y"}
+            qk = QUICK_KEYS.get(event.key)
+            if qk:
+                if not self._selected_wt_id or not self._state:
+                    return
+                wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+                if wt and wt.status == "busy" and wt.tmux_session:
+                    _send_key_async(wt.tmux_session, qk)
+                    event.prevent_default()
+            return
 
-        # Keys that only pass through in Claude focus mode
+        # Claude mode — forward everything to tmux
         FOCUS_PASSTHROUGH = {
             "up": "Up", "down": "Down", "left": "Left", "right": "Right",
             "enter": "Enter", "escape": "Escape", "space": "Space",
             "tab": "Tab", "shift+tab": "BTab",
             "backspace": "BSpace", "delete": "DC",
+            "1": "1", "2": "2", "3": "3", "y": "y",
         }
 
         if not self._selected_wt_id or not self._state:
@@ -496,9 +508,7 @@ class LaneDashboard(App):
         if not wt or wt.status != "busy" or not wt.tmux_session:
             return
 
-        tmux_key = ALWAYS_PASSTHROUGH.get(event.key)
-        if not tmux_key and self._claude_focus:
-            tmux_key = FOCUS_PASSTHROUGH.get(event.key)
+        tmux_key = FOCUS_PASSTHROUGH.get(event.key)
 
         # In Claude mode, forward printable characters too (typing)
         if not tmux_key and self._claude_focus and event.is_printable and event.character:
