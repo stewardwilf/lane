@@ -149,7 +149,7 @@ class LaneDashboard(App):
     }
     WorktreeTable { height: 1fr; }
     #mcp-panel {
-        height: auto; max-height: 5;
+        height: auto; max-height: 10;
         padding: 1 2;
         border-top: solid $primary-background;
         background: $surface;
