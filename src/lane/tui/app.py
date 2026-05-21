@@ -26,7 +26,7 @@ ACCENT = "#7C6FF7"
 ACCENT_MID = "#9B8FFF"
 ACCENT_LIGHT = "#BDB2FF"
 
-LOGO = f"[{ACCENT}]█[/{ACCENT}][{ACCENT_MID}]█[/{ACCENT_MID}][{ACCENT_LIGHT}]█[/{ACCENT_LIGHT}] [bold]lane[/bold]"
+LOGO = f"[{ACCENT}]██[/{ACCENT}][{ACCENT_MID}]██[/{ACCENT_MID}][{ACCENT_LIGHT}]██[/{ACCENT_LIGHT}]  [bold {ACCENT}]lane[/bold {ACCENT}]"
 
 
 class WorktreeTable(DataTable):
