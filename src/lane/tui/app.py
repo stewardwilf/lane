@@ -415,12 +415,6 @@ class LaneDashboard(App):
                     table.update_cell(wt_id, "status", Text.from_markup("[bold red on dark_red] INPUT [/bold red on dark_red]"), update_width=False)
                 except Exception:
                     pass
-            # Auto-switch to Claude mode if this is the selected worktree
-            if wt_id == self._selected_wt_id and not self._claude_focus:
-                self._claude_focus = True
-                self.query_one(TerminalView).can_focus = True
-                self.query_one(TerminalView).focus()
-                self._update_mode_indicator()
             # Send system notification (once per prompt)
             if wt_id not in self._notified_input:
                 self._notified_input.add(wt_id)
