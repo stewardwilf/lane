@@ -686,11 +686,13 @@ def _system_notify(title: str, message: str) -> None:
 
 
 def _get_mcp_servers(root: Path) -> str | None:
-    """Read MCP server names from project .mcp.json and ~/.claude configs."""
+    """Read MCP server names from all Claude config sources."""
     import json
     servers = []
 
-    # Project-level .mcp.json
+    home = Path.home()
+
+    # 1. Project-level .mcp.json
     mcp_json = root / ".mcp.json"
     if mcp_json.exists():
         try:
@@ -699,25 +701,45 @@ def _get_mcp_servers(root: Path) -> str | None:
         except Exception:
             pass
 
-    # Claude settings
-    home = Path.home()
-    for path in [home / ".claude" / "settings.json", home / ".claude" / "settings.local.json"]:
+    # 2. Per-project servers from ~/.claude.json
+    claude_json = home / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = json.loads(claude_json.read_text())
+            # Match this project's path in the projects dict
+            root_str = str(root)
+            for proj_key, proj_val in data.get("projects", {}).items():
+                if isinstance(proj_val, dict) and root_str in proj_key:
+                    servers.extend(proj_val.get("mcpServers", {}).keys())
+            # Claude.ai integrations
+            for name in data.get("claudeAiMcpEverConnected", []):
+                short = name.replace("claude.ai ", "")
+                servers.append(short)
+        except Exception:
+            pass
+
+    # 3. Plugins from global settings
+    for path in [home / ".claude" / "settings.json"]:
         if path.exists():
             try:
                 data = json.loads(path.read_text())
-                servers.extend(data.get("mcpServers", {}).keys())
-                # Plugins that act as MCP
-                for plugin in data.get("enabledPlugins", {}):
-                    if data["enabledPlugins"][plugin]:
-                        name = plugin.split("@")[0]
-                        if name not in servers:
-                            servers.append(name)
+                for plugin, enabled in data.get("enabledPlugins", {}).items():
+                    if enabled:
+                        servers.append(plugin.split("@")[0])
             except Exception:
                 pass
 
     if not servers:
         return None
-    return " ".join(f"[dim]{s}[/dim]" for s in dict.fromkeys(servers))
+
+    # Deduplicate preserving order
+    seen = set()
+    unique = []
+    for s in servers:
+        if s not in seen:
+            seen.add(s)
+            unique.append(s)
+    return "  ".join(f"[dim]{s}[/dim]" for s in unique)
 
 
 def _status_styled(status: str) -> str:
