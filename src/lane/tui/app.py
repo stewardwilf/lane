@@ -172,19 +172,13 @@ class LaneDashboard(App):
     """
 
     BINDINGS = [
-        Binding("a", "attach", "Attach", show=True, priority=True),
-        Binding("c", "continue_task", "Continue", show=True, priority=True),
-        Binding("s", "stop", "Stop", show=True, priority=True),
-        Binding("r", "release", "Release", show=True, priority=True),
-        Binding("n", "new_task", "New task", show=True, priority=True),
-        Binding("i", "focus_reply", "Reply", show=True, priority=True),
-        Binding("1", "send_1", "1", show=False, priority=True),
-        Binding("2", "send_2", "2", show=False, priority=True),
-        Binding("3", "send_3", "3", show=False, priority=True),
-        Binding("y", "send_y", show=False, priority=True),
-        Binding("enter", "send_enter", "Enter", show=False, priority=True),
-        Binding("escape", "send_escape", show=False, priority=True),
-        Binding("q", "quit", "Quit", show=True, priority=True),
+        Binding("a", "attach", "Attach", show=True),
+        Binding("c", "continue_task", "Continue", show=True),
+        Binding("s", "stop", "Stop", show=True),
+        Binding("r", "release", "Release", show=True),
+        Binding("n", "new_task", "New task", show=True),
+        Binding("i", "focus_reply", "Reply", show=True),
+        Binding("q", "quit", "Quit", show=True),
     ]
 
     root: Path
@@ -371,43 +365,33 @@ class LaneDashboard(App):
 
         view.update(f"[dim]{wt.status}[/dim]")
 
-    # ── Send keys to Claude ─────────────────────────────────────
+    # ── Passthrough keys to Claude ──────────────────────────────
 
-    def _input_has_focus(self) -> bool:
-        """Check if any text input widget currently has focus."""
-        focused = self.focused
-        return isinstance(focused, Input)
+    def on_key(self, event) -> None:
+        """Forward 1/2/3/y/Enter/Escape to the tmux session when no input is focused."""
+        if isinstance(self.focused, Input):
+            return  # Let input widgets handle their own keys
 
-    def _send_key(self, key: str) -> None:
-        """Send a raw key to the selected worktree's tmux session."""
-        if self._input_has_focus():
-            return  # Don't intercept input widget keystrokes
+        PASSTHROUGH = {
+            "1": "1", "2": "2", "3": "3",
+            "y": "y",
+            "enter": "Enter",
+            "escape": "Escape",
+        }
+
+        tmux_key = PASSTHROUGH.get(event.key)
+        if not tmux_key:
+            return
+
         if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if wt and wt.status == "busy" and wt.tmux_session:
             subprocess.run(
-                ["tmux", "send-keys", "-t", wt.tmux_session, key],
+                ["tmux", "send-keys", "-t", wt.tmux_session, tmux_key],
                 capture_output=True, check=False,
             )
-
-    def action_send_1(self) -> None:
-        self._send_key("1")
-
-    def action_send_2(self) -> None:
-        self._send_key("2")
-
-    def action_send_3(self) -> None:
-        self._send_key("3")
-
-    def action_send_y(self) -> None:
-        self._send_key("y")
-
-    def action_send_enter(self) -> None:
-        self._send_key("Enter")
-
-    def action_send_escape(self) -> None:
-        self._send_key("Escape")
+            event.prevent_default()
 
     # ── Actions ─────────────────────────────────────────────────
 
