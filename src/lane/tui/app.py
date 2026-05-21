@@ -61,10 +61,7 @@ class StatusBar(Static):
 
 
 class DetailPanel(Static):
-    _mcp_cache: str | None = None
-    _mcp_loaded: bool = False
-
-    def update_from_worktree(self, wt: Worktree | None, root: Path | None = None) -> None:
+    def update_from_worktree(self, wt: Worktree | None) -> None:
         if wt is None:
             self.update("No worktree selected")
             return
@@ -75,14 +72,6 @@ class DetailPanel(Static):
             f"[dim]branch[/dim]  {wt.branch or '—'}",
             f"[dim]task[/dim]    {wt.task or '—'}",
         ]
-
-        if not self._mcp_loaded and root:
-            self._mcp_cache = _get_mcp_servers(root)
-            self._mcp_loaded = True
-
-        if self._mcp_cache:
-            lines.append(f"[dim]mcp[/dim]     {self._mcp_cache}")
-
         self.update("\n".join(lines))
 
 
@@ -159,6 +148,12 @@ class LaneDashboard(App):
         layout: vertical;
     }
     WorktreeTable { height: 1fr; }
+    #mcp-panel {
+        height: auto; max-height: 4;
+        padding: 0 2;
+        border-top: solid $primary-background;
+        background: $surface;
+    }
     DetailPanel {
         height: auto; max-height: 8;
         padding: 1 2;
@@ -217,6 +212,7 @@ class LaneDashboard(App):
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield WorktreeTable()
+                yield Static("", id="mcp-panel")
                 yield DetailPanel(id="detail")
             with Vertical(id="right"):
                 yield Static("", id="pane-header")
@@ -230,6 +226,12 @@ class LaneDashboard(App):
         self._refresh_state()
         self._poll_timer = self.set_interval(0.5, self._refresh_state)
         self._bg_check_timer = self.set_interval(3.0, self._check_background_worktrees)
+        # Load MCP servers once
+        mcp = _get_mcp_servers(self.root)
+        if mcp:
+            self.query_one("#mcp-panel", Static).update(f"[dim]mcp[/dim] {mcp}")
+        else:
+            self.query_one("#mcp-panel", Static).update("[dim]mcp[/dim] [dim]none[/dim]")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "reply-input":
@@ -321,7 +323,7 @@ class LaneDashboard(App):
 
         if self._selected_wt_id:
             wt = next((w for w in state.worktrees if w.id == self._selected_wt_id), None)
-            self.query_one(DetailPanel).update_from_worktree(wt, self.root)
+            self.query_one(DetailPanel).update_from_worktree(wt)
             self._update_pane_header(wt)
             self._update_reply_hint(wt)
             self._refresh_terminal_view(wt)
@@ -344,7 +346,7 @@ class LaneDashboard(App):
             self._selected_wt_id = new_id
             if self._state:
                 wt = next((w for w in self._state.worktrees if w.id == new_id), None)
-                self.query_one(DetailPanel).update_from_worktree(wt, self.root)
+                self.query_one(DetailPanel).update_from_worktree(wt)
                 self._update_pane_header(wt)
                 self._update_reply_hint(wt)
                 self._refresh_terminal_view(wt)
