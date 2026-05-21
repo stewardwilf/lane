@@ -76,13 +76,13 @@ class DetailPanel(Static):
 
 
 class TerminalView(Static):
-    """Shows a live snapshot of the tmux pane — exactly what Claude looks like."""
+    """Shows a live snapshot of the tmux pane with scrollback."""
 
     DEFAULT_CSS = """
     TerminalView {
         height: 1fr;
         padding: 0 1;
-        overflow: auto;
+        overflow-y: scroll;
     }
     """
 
@@ -476,6 +476,7 @@ class LaneDashboard(App):
             "up": "Up", "down": "Down", "left": "Left", "right": "Right",
             "enter": "Enter", "escape": "Escape", "space": "Space",
             "tab": "Tab", "shift+tab": "BTab",
+            "backspace": "BSpace", "delete": "DC",
         }
 
         if not self._selected_wt_id or not self._state:
@@ -487,6 +488,15 @@ class LaneDashboard(App):
         tmux_key = ALWAYS_PASSTHROUGH.get(event.key)
         if not tmux_key and self._claude_focus:
             tmux_key = FOCUS_PASSTHROUGH.get(event.key)
+
+        # In Claude mode, forward printable characters too (typing)
+        if not tmux_key and self._claude_focus and event.is_printable and event.character:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", wt.tmux_session, "-l", event.character],
+                capture_output=True, check=False,
+            )
+            event.prevent_default()
+            return
 
         if tmux_key:
             subprocess.run(
@@ -614,10 +624,10 @@ class LaneDashboard(App):
 
 
 def _capture_tmux_pane(session_name: str) -> str | None:
-    """Capture the current visible content of a tmux pane — exactly what a human would see."""
+    """Capture tmux pane content including scrollback history."""
     try:
         r = subprocess.run(
-            ["tmux", "capture-pane", "-t", session_name, "-p", "-e"],
+            ["tmux", "capture-pane", "-t", session_name, "-p", "-e", "-S", "-500"],
             capture_output=True,
             text=True,
             check=False,
