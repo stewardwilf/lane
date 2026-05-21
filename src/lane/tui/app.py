@@ -178,6 +178,12 @@ class LaneDashboard(App):
         Binding("r", "release", "Release", show=True, priority=True),
         Binding("n", "new_task", "New task", show=True, priority=True),
         Binding("i", "focus_reply", "Reply", show=True, priority=True),
+        Binding("1", "send_1", "1", show=False, priority=True),
+        Binding("2", "send_2", "2", show=False, priority=True),
+        Binding("3", "send_3", "3", show=False, priority=True),
+        Binding("y", "send_y", show=False, priority=True),
+        Binding("enter", "send_enter", "Enter", show=False, priority=True),
+        Binding("escape", "send_escape", show=False, priority=True),
         Binding("q", "quit", "Quit", show=True, priority=True),
     ]
 
@@ -364,6 +370,37 @@ class LaneDashboard(App):
             return
 
         view.update(f"[dim]{wt.status}[/dim]")
+
+    # ── Send keys to Claude ─────────────────────────────────────
+
+    def _send_key(self, key: str) -> None:
+        """Send a raw key to the selected worktree's tmux session."""
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if wt and wt.status == "busy" and wt.tmux_session:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", wt.tmux_session, key],
+                capture_output=True, check=False,
+            )
+
+    def action_send_1(self) -> None:
+        self._send_key("1")
+
+    def action_send_2(self) -> None:
+        self._send_key("2")
+
+    def action_send_3(self) -> None:
+        self._send_key("3")
+
+    def action_send_y(self) -> None:
+        self._send_key("y")
+
+    def action_send_enter(self) -> None:
+        self._send_key("Enter")
+
+    def action_send_escape(self) -> None:
+        self._send_key("Escape")
 
     # ── Actions ─────────────────────────────────────────────────
 
