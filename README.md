@@ -1,4 +1,5 @@
 # lane
+<img width="1728" height="1004" alt="Screenshot 2026-05-21 at 15 21 26" src="https://github.com/user-attachments/assets/d638c63e-7f76-4b97-855e-839271b81124" />
 
 A TUI dashboard for running parallel Claude Code sessions across isolated git worktrees.
 
@@ -24,6 +25,7 @@ uv tool install --force git+https://github.com/stewardwilf/lane.git
 ```
 
 **Prerequisites:** git >= 2.20, python >= 3.11. tmux is installed automatically via Homebrew during `lane init` if missing.
+
 
 ## Quick start
 
