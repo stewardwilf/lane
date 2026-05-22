@@ -691,19 +691,37 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
     plain = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\r]', '', plain)
     plain = re.sub(r'[─│┌┐└┘├┤┬┴┼╌╍═║╔╗╚╝╠╣╦╩╬▀▄█▌▐░▒▓■□●○◐◑◒◓]', '', plain)
 
+    # Check for standard Claude permission prompt first
+    if re.search(r'Do you want to proceed\?', plain):
+        options = []
+        if re.search(r'1\.\s*Yes\b', plain):
+            options.append(("1", "Yes"))
+        if re.search(r'2\.\s*Yes', plain):
+            # Capture the full "Yes, ..." label
+            m2 = re.search(r'2\.\s*(Yes[^3\n]{0,40})', plain)
+            label = m2.group(1).strip().rstrip(',') if m2 else "Yes, allow for project"
+            label = re.split(r'\s{3,}', label)[0].strip()
+            options.append(("2", label))
+        if re.search(r'3\.\s*No\b', plain):
+            options.append(("3", "No"))
+        if options:
+            return options
+
+    # Generic numbered option parsing
     options = []
     for line in plain.splitlines():
         line = line.strip()
-        # Match lines like "› 1. Option A" or "  1. Yes" or ") 1. Yes"
         m = re.match(r'^[›❯\)\s]*(\d+)\.\s+(?:\[[ x]\]\s+)?(.+)$', line)
         if m:
             num = m.group(1)
             label = m.group(2).strip()
+            # Truncate at column boundaries (bash commands appear after gaps)
+            label = re.split(r'\s{3,}', label)[0].strip()
             # Filter out noise
             if (label
-                and len(label) < 60
+                and 2 < len(label) < 50
                 and 'hidden' not in label.lower()
-                and not re.match(r'^[\s\-_=*~]+$', label)):
+                and not re.match(r'^[\s\-_=*~./]+$', label)):
                 options.append((num, label))
 
     return options
