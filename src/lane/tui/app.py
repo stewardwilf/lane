@@ -201,7 +201,8 @@ class LaneDashboard(App):
         align: left middle;
     }
     #logo { width: auto; padding: 0 2 0 0; }
-    StatusBar { padding: 0 2; content-align: left middle; }
+    StatusBar { padding: 0 2; content-align: left middle; width: 1fr; }
+    #version-badge { width: auto; padding: 0 1; color: $text-muted; }
     #main { layout: horizontal; height: 1fr; }
     #left {
         width: 1fr; max-width: 64;
@@ -266,9 +267,11 @@ class LaneDashboard(App):
         self._current_options = []
 
     def compose(self) -> ComposeResult:
+        from lane import __version__
         with Horizontal(id="header-bar"):
             yield Static(LOGO, id="logo")
             yield StatusBar(id="status-bar")
+            yield Static(f"[dim]v{__version__}[/dim]", id="version-badge")
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield WorktreeTable()
