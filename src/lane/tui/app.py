@@ -164,6 +164,7 @@ class TaskInputScreen(ModalScreen[str | None]):
     """
 
     BINDINGS = [
+        Binding("enter", "submit", show=False, priority=True),
         Binding("escape", "cancel", show=False),
     ]
 
@@ -181,12 +182,9 @@ class TaskInputScreen(ModalScreen[str | None]):
     def on_mount(self) -> None:
         self.query_one("#task-input", TextArea).focus()
 
-    def on_key(self, event) -> None:
-        if event.key == "enter" and isinstance(self.focused, TextArea):
-            event.prevent_default()
-            event.stop()
-            value = self.query_one("#task-input", TextArea).text.strip()
-            self.dismiss(value if value else None)
+    def action_submit(self) -> None:
+        value = self.query_one("#task-input", TextArea).text.strip()
+        self.dismiss(value if value else None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
