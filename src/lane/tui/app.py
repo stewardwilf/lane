@@ -453,8 +453,12 @@ class LaneDashboard(App):
             return
 
         opts_widget.display = True
+        seen_ids = set()
         for key, label in options:
-            opts_widget.add_option(Option(f"  {key}.  {label}", id=f"opt-{key}"))
+            opt_id = f"opt-{key}"
+            if opt_id not in seen_ids:
+                seen_ids.add(opt_id)
+                opts_widget.add_option(Option(f"  {key}.  {label}", id=opt_id))
         opts_widget.add_option(Option("  ✎  Type a response...", id="opt-type"))
 
     def _update_reply_hint(self, wt: Worktree | None) -> None:
