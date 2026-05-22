@@ -488,8 +488,6 @@ class LaneDashboard(App):
                 _send_key_async(wt.tmux_session, key)
                 _send_key_async(wt.tmux_session, "Enter")
                 self.notify(f"Sent {key} to {wt.id}", timeout=2)
-                # Return focus to table
-                self.query_one(WorktreeTable).focus()
 
     # ── Input detection ─────────────────────────────────────────
 
