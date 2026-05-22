@@ -609,15 +609,29 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
 
     Returns list of (key, label) tuples like [("1", "Yes"), ("2", "No")].
     """
+    # Strip all ANSI escape sequences
     plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
-    plain = re.sub(r'\x1b\][^\x07]*\x07', '', plain)
+    plain = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', plain)
+    plain = re.sub(r'\x1b[()][AB012]', '', plain)
+    plain = re.sub(r'\x1b[78DEHM]', '', plain)
+    # Strip box-drawing, control chars, carriage returns
+    plain = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\r]', '', plain)
+    plain = re.sub(r'[─│┌┐└┘├┤┬┴┼╌╍═║╔╗╚╝╠╣╦╩╬▀▄█▌▐░▒▓■□●○◐◑◒◓]', '', plain)
 
     options = []
-    for m in re.finditer(r'(?:›\s*)?(\d+)\.\s+(.+?)(?:\n|$)', plain):
-        num = m.group(1)
-        label = m.group(2).strip()
-        if label and len(label) < 80:
-            options.append((num, label))
+    for line in plain.splitlines():
+        line = line.strip()
+        # Match lines like "› 1. Option A" or "  1. Yes" or ") 1. Yes"
+        m = re.match(r'^[›❯\)\s]*(\d+)\.\s+(?:\[[ x]\]\s+)?(.+)$', line)
+        if m:
+            num = m.group(1)
+            label = m.group(2).strip()
+            # Filter out noise
+            if (label
+                and len(label) < 60
+                and 'hidden' not in label.lower()
+                and not re.match(r'^[\s\-_=*~]+$', label)):
+                options.append((num, label))
 
     return options
 
