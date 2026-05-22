@@ -94,18 +94,29 @@ class TerminalView(VerticalScroll):
             self.call_later(self.scroll_end, animate=False)
 
 
-class PromptBar(Static):
-    """Shows detected Claude prompts as selectable options."""
+class PromptOptions(OptionList):
+    """Interactive option selector for Claude's prompts."""
+
+    BINDINGS = [Binding("escape", "dismiss", show=False)]
 
     DEFAULT_CSS = """
-    PromptBar {
+    PromptOptions {
         height: auto;
         max-height: 8;
-        padding: 0 1;
         background: $surface;
         border-top: solid $primary-background;
+        padding: 0 1;
+    }
+    PromptOptions:focus {
+        border-top: solid #7C6FF7;
+    }
+    PromptOptions > .option-list--option-highlighted {
+        background: #7C6FF7 30%;
     }
     """
+
+    def action_dismiss(self) -> None:
+        self.app.query_one(WorktreeTable).focus()
 
 
 class ReplyInput(Input):
@@ -239,8 +250,8 @@ class LaneDashboard(App):
                 yield Static("", id="pane-header")
                 yield TerminalView(id="term-view")
                 with Vertical(id="interaction-bar"):
-                    yield PromptBar(id="prompt-bar")
-                    yield Static("[dim]i to reply · a to attach[/dim]", id="reply-hint")
+                    yield PromptOptions(id="prompt-options")
+                    yield Static("[dim]i to type · a to attach[/dim]", id="reply-hint")
                     yield ReplyInput(placeholder="Type a message to Claude...", id="reply-input")
         yield Footer()
 
@@ -294,8 +305,8 @@ class LaneDashboard(App):
 
     def on_key(self, event) -> None:
         """Handle number keys for quick prompt responses."""
-        if isinstance(self.focused, Input):
-            return
+        if isinstance(self.focused, (Input, PromptOptions)):
+            return  # Let the widget handle its own keys
 
         # Number keys send the corresponding option to Claude
         if event.key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
@@ -394,11 +405,11 @@ class LaneDashboard(App):
 
     def _refresh_terminal_view(self, wt: Worktree | None) -> None:
         view = self.query_one(TerminalView)
-        prompt_bar = self.query_one(PromptBar)
+        opts = self.query_one(PromptOptions)
 
         if not wt:
             view.update("[dim]Select a worktree[/dim]")
-            prompt_bar.update("")
+            self._set_prompt_options([])
             return
 
         if wt.status == "busy" and wt.tmux_session:
@@ -407,27 +418,42 @@ class LaneDashboard(App):
                 view.update(Text.from_ansi(content))
                 needs_input = _needs_user_input(content)
                 self._update_input_alert(wt.id, needs_input)
-                # Parse and show detected options
                 options = _parse_options(content)
-                if options:
-                    lines = "  ".join(f"[bold]{k}[/bold] {label}" for k, label in options)
-                    prompt_bar.update(f"[dim]respond:[/dim]  {lines}")
-                else:
-                    prompt_bar.update("")
+                self._set_prompt_options(options)
             return
 
         if wt.status == "done":
             view.update(f"[dim]Claude finished. Press [bold]i[/bold] to continue or [bold]r[/bold] to release.[/dim]")
-            prompt_bar.update("")
+            self._set_prompt_options([])
             return
 
         if wt.status == "idle":
             view.update(f"[dim]Idle. Press [bold]i[/bold] or [bold]n[/bold] to dispatch a task.[/dim]")
-            prompt_bar.update("")
+            self._set_prompt_options([])
             return
 
         view.update(f"[dim]{wt.status}[/dim]")
-        prompt_bar.update("")
+        self._set_prompt_options([])
+
+    def _set_prompt_options(self, options: list[tuple[str, str]]) -> None:
+        """Update the interactive option list. Only rebuilds if options changed."""
+        opts_widget = self.query_one(PromptOptions)
+
+        # Compare with current to avoid flicker
+        new_keys = [(k, l) for k, l in options]
+        if new_keys == self._current_options:
+            return
+        self._current_options = new_keys
+
+        opts_widget.clear_options()
+        if not options:
+            opts_widget.display = False
+            return
+
+        opts_widget.display = True
+        for key, label in options:
+            opts_widget.add_option(Option(f"  {key}.  {label}", id=f"opt-{key}"))
+        opts_widget.add_option(Option("  ✎  Type a response...", id="opt-type"))
 
     def _update_reply_hint(self, wt: Worktree | None) -> None:
         hint = self.query_one("#reply-hint", Static)
@@ -437,6 +463,26 @@ class LaneDashboard(App):
             hint.update(f"[dim]i to reply · sends to [bold]{wt.id}[/bold][/dim]")
         elif wt.status == "done":
             hint.update(f"[dim]i to continue · new Claude session in [bold]{wt.id}[/bold][/dim]")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle selection from the prompt options list."""
+        option_id = event.option.id
+        if not option_id:
+            return
+
+        if option_id == "opt-type":
+            self.query_one("#reply-input", ReplyInput).focus()
+            return
+
+        # Extract the number from "opt-1", "opt-2", etc.
+        key = option_id.replace("opt-", "")
+        if self._selected_wt_id and self._state:
+            wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+            if wt and wt.status == "busy" and wt.tmux_session:
+                _send_key_async(wt.tmux_session, key)
+                self.notify(f"Sent {key} to {wt.id}", timeout=2)
+                # Return focus to table
+                self.query_one(WorktreeTable).focus()
 
     # ── Input detection ─────────────────────────────────────────
 
