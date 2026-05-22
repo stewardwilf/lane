@@ -479,6 +479,21 @@ class LaneDashboard(App):
         if isinstance(self.focused, Input):
             return
 
+        # Backtick always toggles mode — never forward to Claude
+        if event.key == "grave_accent" or (event.character == "`"):
+            self.action_toggle_focus()
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Ctrl+C always stops the selected agent — emergency exit
+        if event.key == "ctrl+c" and self._claude_focus:
+            self.action_stop()
+            self.action_toggle_focus()  # Switch back to dashboard
+            event.prevent_default()
+            event.stop()
+            return
+
         # In Dashboard mode, don't intercept any navigation keys
         if not self._claude_focus:
             # Only intercept 1/2/3/y for quick prompt responses on busy worktrees
