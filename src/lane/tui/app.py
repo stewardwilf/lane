@@ -15,7 +15,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Footer, Static, DataTable, Input, Label, OptionList
+from textual.widgets import Footer, Static, DataTable, Input, Label, OptionList, TextArea
 from textual.widgets.option_list import Option
 
 from lane.state import read_state, PoolState, Worktree
@@ -119,25 +119,52 @@ class PromptOptions(OptionList):
         self.app.query_one(WorktreeTable).focus()
 
 
-class ReplyInput(Input):
+class ReplyInput(TextArea):
+    """Multi-line reply input. Ctrl+Enter to send."""
+
+    BINDINGS = [
+        Binding("ctrl+j", "submit", "Send", show=False),  # Ctrl+Enter
+        Binding("escape", "dismiss", "Cancel", show=False),
+    ]
+
     DEFAULT_CSS = """
-    ReplyInput { dock: bottom; margin: 0 0; }
+    ReplyInput {
+        height: 4;
+        min-height: 3;
+        max-height: 8;
+    }
     """
+
+    def action_submit(self) -> None:
+        text = self.text.strip()
+        if text:
+            # Call the app's handler directly
+            self.app._handle_reply(text)
+        self.clear()
+        self.app.query_one(WorktreeTable).focus()
+
+    def action_dismiss(self) -> None:
+        self.clear()
+        self.app.query_one(WorktreeTable).focus()
 
 
 class TaskInputScreen(ModalScreen[str | None]):
     CSS = """
     TaskInputScreen { align: center middle; }
     #task-dialog {
-        width: 70; height: auto; max-height: 12;
+        width: 80; height: auto; max-height: 20;
         padding: 1 2; background: $surface;
         border: thick $primary-background;
     }
     #task-label { margin-bottom: 1; }
-    #task-input { width: 100%; }
+    #task-input { width: 100%; height: 8; min-height: 4; }
+    #task-hint { height: 1; color: $text-muted; margin-top: 1; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("ctrl+j", "submit", show=False),  # Ctrl+Enter
+    ]
 
     def __init__(self, title: str = "New task", placeholder: str = "e.g. Fix the broken login redirect", **kwargs):
         super().__init__(**kwargs)
@@ -147,13 +174,14 @@ class TaskInputScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="task-dialog"):
             yield Label(f"[bold]{self._title}[/bold]", id="task-label")
-            yield Input(placeholder=self._placeholder, id="task-input")
+            yield TextArea(id="task-input")
+            yield Static("[dim]Ctrl+Enter to submit · Escape to cancel[/dim]", id="task-hint")
 
     def on_mount(self) -> None:
-        self.query_one("#task-input", Input).focus()
+        self.query_one("#task-input", TextArea).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
+    def action_submit(self) -> None:
+        value = self.query_one("#task-input", TextArea).text.strip()
         self.dismiss(value if value else None)
 
     def action_cancel(self) -> None:
@@ -251,8 +279,8 @@ class LaneDashboard(App):
                 yield TerminalView(id="term-view")
                 with Vertical(id="interaction-bar"):
                     yield PromptOptions(id="prompt-options")
-                    yield Static("[dim]i to type · a to attach[/dim]", id="reply-hint")
-                    yield ReplyInput(placeholder="Type a message to Claude...", id="reply-input")
+                    yield Static("[dim]i to type · Ctrl+Enter to send · a to attach[/dim]", id="reply-hint")
+                    yield ReplyInput(id="reply-input")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -272,17 +300,8 @@ class LaneDashboard(App):
 
     # ── Input handling ──────────────────────────────────────────
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "reply-input":
-            return
-
-        message = event.value.strip()
-        event.input.value = ""
-
-        if not message:
-            self.query_one(WorktreeTable).focus()
-            return
-
+    def _handle_reply(self, message: str) -> None:
+        """Handle submitted text from the reply area."""
         if not self._selected_wt_id or not self._state:
             self.notify("No worktree selected", severity="warning")
             self.query_one(WorktreeTable).focus()
@@ -305,7 +324,7 @@ class LaneDashboard(App):
 
     def on_key(self, event) -> None:
         """Handle number keys for quick prompt responses."""
-        if isinstance(self.focused, (Input, PromptOptions)):
+        if isinstance(self.focused, (Input, TextArea, PromptOptions)):
             return  # Let the widget handle its own keys
 
         # Number keys send the corresponding option + Enter to Claude

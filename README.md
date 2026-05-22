@@ -3,7 +3,7 @@
 
 A TUI dashboard for running parallel Claude Code sessions across isolated git worktrees.
 
-Lane is a thin orchestration layer around Claude Code. It manages a fixed pool of pre-warmed git worktrees so you can run multiple Claude sessions in parallel on the same repo — each in an isolated checkout, all visible from one dashboard. You don't lose any Claude functionality: every session is a real interactive Claude session. The dashboard shows a live scrollable terminal view, detects when Claude needs input, and lets you interact directly — including typing, navigating menus, and approving prompts — without ever leaving the view.
+Lane is a thin orchestration layer around Claude Code. It manages a fixed pool of pre-warmed git worktrees so you can run multiple Claude sessions in parallel on the same repo — each in an isolated checkout, all visible from one dashboard. You don't lose any Claude functionality: every session is a real interactive Claude session. The dashboard shows a live scrollable terminal view, detects when Claude needs input, presents options as an interactive selector, and lets you respond — all without leaving the view.
 
 ## Install
 
@@ -26,7 +26,6 @@ uv tool install --force git+https://github.com/stewardwilf/lane.git
 
 **Prerequisites:** git >= 2.20, python >= 3.11. tmux is installed automatically via Homebrew during `lane init` if missing.
 
-
 ## Quick start
 
 ```bash
@@ -40,14 +39,13 @@ lane dashboard
 ```
 
 From the dashboard:
-1. Press **`n`** to dispatch a task — Claude starts in its own worktree
-2. The right pane shows a live scrollable view of Claude's terminal (500 lines of history)
-3. When Claude needs input, the status flashes **INPUT** and you get a macOS notification
-4. Press **`1`/`2`/`3`** to respond to numbered prompts directly from either mode
-5. Press **`` ` ``** to switch to **Claude mode** — type directly into Claude, navigate menus with arrow keys, toggle checkboxes with Space, confirm with Enter
-6. Press **`` ` ``** again to switch back to **Dashboard mode** and navigate between worktrees
-7. Press **`a`** to attach for the full native Claude experience (Ctrl+D to return)
-8. When Claude finishes, the worktree moves to **DONE** — press **`i`** to continue with a follow-up, or **`r`** to release
+1. Press **`n`** to dispatch a task (multi-line, Ctrl+Enter to submit)
+2. The right pane shows a live scrollable view of Claude's terminal
+3. When Claude needs input, the status flashes **INPUT** and an **interactive option selector** appears — arrow through and Enter to pick
+4. Press **`1`**-**`9`** to quick-respond to numbered prompts
+5. Press **`i`** to open the reply box — multi-line, Ctrl+Enter to send
+6. Press **`a`** to attach for the full native Claude experience (Ctrl+D to return)
+7. When Claude finishes, the worktree moves to **DONE** — press **`i`** to continue with a follow-up, or **`r`** to release
 
 ## CLI commands
 
@@ -57,7 +55,7 @@ From the dashboard:
 | `lane task <description>` | Dispatch a task to an idle worktree |
 | `lane dashboard` | Open the TUI dashboard |
 | `lane attach <wt-id>` | Attach to a Claude session (full interactive) |
-| `lane continue <wt-id> [prompt]` | Start a new Claude session in a done worktree |
+| `lane continue <wt-id> [prompt]` | Continue a done worktree with a new prompt |
 | `lane status [--watch]` | Show pool status |
 | `lane stop <wt-id>` | Kill a running agent |
 | `lane release <wt-id>` | Auto-commit changes, reset worktree to idle |
@@ -65,44 +63,29 @@ From the dashboard:
 
 ## Dashboard
 
-The dashboard has two modes, toggled with **`` ` ``** (backtick). A badge in the header shows which mode you're in.
-
-### Dashboard mode (default)
-
-Navigate between worktrees. The right pane shows a live scrollable terminal snapshot of the selected session.
+### Keybinds
 
 | Key | Action |
 |---|---|
 | `Up` / `Down` | Select worktree |
-| `n` | Dispatch a new task |
+| `1`-`9` / `y` | Quick-respond to Claude's numbered prompts |
+| `n` | Dispatch a new task (multi-line input) |
+| `i` | Open reply box (multi-line, Ctrl+Enter to send) |
 | `a` | Attach to Claude session (Ctrl+D to return) |
-| `i` | Focus reply input |
 | `c` | Continue a done worktree with a follow-up prompt |
 | `s` | Stop the selected agent |
 | `r` | Release the selected worktree |
-| `1` `2` `3` `y` | Send directly to Claude (works in both modes) |
 | `q` | Quit |
 
-### Claude mode
+### Interactive prompt selector
 
-Full keyboard passthrough to the selected worktree's Claude session. Type directly, navigate menus, approve prompts — all without attaching.
+When Claude presents numbered options (permission prompts, menu choices, etc.), an **interactive option list** appears above the reply box. Arrow up/down to navigate, Enter to select. The last option is always "Type a response..." which opens the reply box.
 
-| Key | Action |
-|---|---|
-| Any character | Types into Claude's session |
-| `Up` / `Down` | Navigate Claude's menus |
-| `Space` | Toggle checkboxes |
-| `Enter` | Confirm selection |
-| `Escape` | Cancel |
-| `Tab` / `Shift+Tab` | Cycle Claude modes |
-| `Left` / `Right` | Navigate tabs |
-| `Backspace` / `Delete` | Edit text |
+### Reply box
 
-### Reply input
+Press **`i`** to focus the multi-line reply box. Type your message, then **Ctrl+Enter** to send. Escape to cancel. What happens depends on the worktree status:
 
-Press **`i`** to focus the reply input bar. Behaviour depends on the worktree status:
-
-| Status | What happens on Enter |
+| Status | What happens on Ctrl+Enter |
 |---|---|
 | **BUSY** | Sends your message to the running Claude session |
 | **DONE** | Starts a new Claude session with your message as a follow-up |
@@ -117,7 +100,7 @@ When Claude needs input (permission prompts, option selects, etc.):
 
 ### MCP servers
 
-The bottom-left panel shows connected MCP servers with live status, refreshed every 10 seconds:
+The bottom-left panel shows connected MCP servers with live status (refreshed every 10s):
 - **●** connected
 - **△** needs authentication
 
@@ -132,9 +115,9 @@ IDLE ──[n/i dispatch]──> BUSY ──[Claude exits]──> DONE ──[i/
                                                        ──[r release]────> IDLE
 ```
 
-1. **`lane init`** creates N worktrees pinned to holding branches. Once per project.
-2. **`lane task`** (or `n` / `i` in dashboard) claims an idle worktree, creates a `task/<slug>` branch, launches interactive Claude in a tmux session.
-3. The dashboard uses **`tmux capture-pane`** to show exactly what Claude's terminal looks like — proper formatting, scrollable history.
+1. **`lane init`** creates N worktrees pinned to holding branches forked from your base. Once per project.
+2. **`lane task`** (or `n` / `i` in dashboard) atomically claims an idle worktree, creates a `task/<slug>` branch, launches interactive Claude in a tmux session.
+3. The dashboard uses **`tmux capture-pane`** to show exactly what Claude's terminal looks like — proper formatting, scrollable history. Claude's prompts are parsed and recreated as interactive selectors in lane's own UI.
 4. When Claude exits, the worktree moves to **DONE**. Branch and changes are preserved. Continue or release.
 5. **`lane release`** auto-commits uncommitted work, resets to holding branch, returns to idle.
 
@@ -144,7 +127,9 @@ Lane automatically syncs your `.claude/settings.json`, `settings.local.json`, an
 
 ### Terminal preview
 
-The right pane uses `tmux capture-pane` to show exactly what Claude's terminal looks like, updated every 500ms. This is a read-only preview — press **`` ` ``** for Claude mode to interact, or **`a`** to attach for the full native experience.
+The right pane uses `tmux capture-pane` to show exactly what Claude's terminal looks like, updated every 500ms with 500 lines of scrollback. All interaction goes through lane's UI (option selector, reply box, quick keys) — never directly into the terminal.
+
+For full native access, press **`a`** to attach to the tmux session. **Ctrl+D** to return.
 
 ## Configuration
 
