@@ -308,21 +308,23 @@ class LaneDashboard(App):
         if isinstance(self.focused, (Input, PromptOptions)):
             return  # Let the widget handle its own keys
 
-        # Number keys send the corresponding option to Claude
+        # Number keys send the corresponding option + Enter to Claude
         if event.key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
             if self._selected_wt_id and self._state:
                 wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
                 if wt and wt.status == "busy" and wt.tmux_session:
                     _send_key_async(wt.tmux_session, event.key)
+                    _send_key_async(wt.tmux_session, "Enter")
                     event.prevent_default()
             return
 
-        # y for yes
+        # y for yes + Enter
         if event.key == "y":
             if self._selected_wt_id and self._state:
                 wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
                 if wt and wt.status == "busy" and wt.tmux_session:
                     _send_key_async(wt.tmux_session, "y")
+                    _send_key_async(wt.tmux_session, "Enter")
                     event.prevent_default()
 
     # ── State refresh ───────────────────────────────────────────
@@ -480,6 +482,7 @@ class LaneDashboard(App):
             wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
             if wt and wt.status == "busy" and wt.tmux_session:
                 _send_key_async(wt.tmux_session, key)
+                _send_key_async(wt.tmux_session, "Enter")
                 self.notify(f"Sent {key} to {wt.id}", timeout=2)
                 # Return focus to table
                 self.query_one(WorktreeTable).focus()
