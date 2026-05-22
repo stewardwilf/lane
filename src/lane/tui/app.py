@@ -120,10 +120,9 @@ class PromptOptions(OptionList):
 
 
 class ReplyInput(TextArea):
-    """Multi-line reply input. Ctrl+Enter to send."""
+    """Multi-line reply input. Enter to send, Shift+Enter for new line."""
 
     BINDINGS = [
-        Binding("ctrl+j", "submit", "Send", show=False),  # Ctrl+Enter
         Binding("escape", "dismiss", "Cancel", show=False),
     ]
 
@@ -135,13 +134,16 @@ class ReplyInput(TextArea):
     }
     """
 
-    def action_submit(self) -> None:
-        text = self.text.strip()
-        if text:
-            # Call the app's handler directly
-            self.app._handle_reply(text)
-        self.clear()
-        self.app.query_one(WorktreeTable).focus()
+    def _on_key(self, event) -> None:
+        if event.key == "enter":
+            # Plain Enter sends
+            event.prevent_default()
+            event.stop()
+            text = self.text.strip()
+            if text:
+                self.app._handle_reply(text)
+            self.clear()
+            self.app.query_one(WorktreeTable).focus()
 
     def action_dismiss(self) -> None:
         self.clear()
@@ -163,7 +165,6 @@ class TaskInputScreen(ModalScreen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", show=False),
-        Binding("ctrl+j", "submit", show=False),  # Ctrl+Enter
     ]
 
     def __init__(self, title: str = "New task", placeholder: str = "e.g. Fix the broken login redirect", **kwargs):
@@ -175,14 +176,17 @@ class TaskInputScreen(ModalScreen[str | None]):
         with Vertical(id="task-dialog"):
             yield Label(f"[bold]{self._title}[/bold]", id="task-label")
             yield TextArea(id="task-input")
-            yield Static("[dim]Ctrl+Enter to submit · Escape to cancel[/dim]", id="task-hint")
+            yield Static("[dim]Enter to submit · Escape to cancel[/dim]", id="task-hint")
 
     def on_mount(self) -> None:
         self.query_one("#task-input", TextArea).focus()
 
-    def action_submit(self) -> None:
-        value = self.query_one("#task-input", TextArea).text.strip()
-        self.dismiss(value if value else None)
+    def on_key(self, event) -> None:
+        if event.key == "enter" and isinstance(self.focused, TextArea):
+            event.prevent_default()
+            event.stop()
+            value = self.query_one("#task-input", TextArea).text.strip()
+            self.dismiss(value if value else None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -282,7 +286,7 @@ class LaneDashboard(App):
                 yield TerminalView(id="term-view")
                 with Vertical(id="interaction-bar"):
                     yield PromptOptions(id="prompt-options")
-                    yield Static("[dim]i to type · Ctrl+Enter to send · a to attach[/dim]", id="reply-hint")
+                    yield Static("[dim]i to type · Enter to send · a to attach[/dim]", id="reply-hint")
                     yield ReplyInput(id="reply-input")
         yield Footer()
 
