@@ -741,9 +741,11 @@ def _trim_chrome(content: str) -> str:
     cut_at = len(lines)
 
     # Walk from bottom up, find where Claude's chrome starts
-    for i in range(len(plain_lines) - 1, max(len(plain_lines) - 15, 0), -1):
+    # Skip trailing blank lines first
+    for i in range(len(plain_lines) - 1, max(len(plain_lines) - 20, 0), -1):
         stripped = plain_lines[i].strip()
         if not stripped:
+            cut_at = i  # Trim blank lines at bottom too
             continue
         # Claude's input prompt line
         if re.match(r'^[›❯]\s', stripped):
