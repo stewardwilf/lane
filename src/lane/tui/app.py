@@ -247,6 +247,8 @@ class LaneDashboard(App):
         Binding("r", "release", "Release", show=True),
         Binding("n", "new_task", "New task", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
+        Binding("plus_sign", "add_worktree", "+Add", show=True),
+        Binding("d", "remove_worktree", "Del", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -648,6 +650,50 @@ class LaneDashboard(App):
             except Exception as e:
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
         Thread(target=_release, daemon=True).start()
+
+    def action_add_worktree(self) -> None:
+        self.notify("Adding worktree...", timeout=2)
+        def _add():
+            try:
+                from lane.cli import add_worktree_headless
+                wt_id, err = add_worktree_headless(self.root)
+                if err:
+                    self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+                else:
+                    self.call_from_thread(self.notify, f"Added {wt_id}")
+                    self.call_from_thread(self._rebuild_table)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        Thread(target=_add, daemon=True).start()
+
+    def action_remove_worktree(self) -> None:
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt:
+            return
+        if wt.status == "busy":
+            self.notify("Stop the agent first (s)", severity="warning")
+            return
+        wt_id = self._selected_wt_id
+        self.notify(f"Removing {wt_id}...", timeout=2)
+        def _remove():
+            try:
+                from lane.cli import remove_worktree_headless
+                err = remove_worktree_headless(self.root, wt_id)
+                if err:
+                    self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+                else:
+                    self.call_from_thread(self.notify, f"Removed {wt_id}")
+                    self.call_from_thread(self._rebuild_table)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        Thread(target=_remove, daemon=True).start()
+
+    def _rebuild_table(self) -> None:
+        """Force a full table rebuild on next refresh."""
+        self.query_one(WorktreeTable).clear()
+        self._table_initialized = False
 
 
 # ── Helpers ─────────────────────────────────────────────────────

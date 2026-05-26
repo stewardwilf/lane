@@ -428,6 +428,34 @@ def destroy(
     console.print("[green]Pool destroyed.[/green]")
 
 
+# ── add ─────────────────────────────────────────────────────────
+
+@app.command(name="add")
+def add_wt():
+    """Add a new worktree to the pool."""
+    root = find_root()
+    wt_id, err = add_worktree_headless(root)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Added {wt_id}.[/green]")
+
+
+# ── remove ──────────────────────────────────────────────────────
+
+@app.command(name="remove")
+def remove_wt(
+    wt_id: str = typer.Argument(..., help="Worktree ID to remove (must be idle)."),
+):
+    """Remove a worktree from the pool."""
+    root = find_root()
+    err = remove_worktree_headless(root, wt_id)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Removed {wt_id}.[/green]")
+
+
 # ── version ─────────────────────────────────────────────────────
 
 @app.command()
@@ -743,6 +771,71 @@ def _slugify(text: str, max_len: int = 30) -> str:
     slug = re.sub(r"[\s-]+", "-", slug)
     slug = slug.strip("-")[:max_len].rstrip("-")
     return slug or "task"
+
+
+def add_worktree_headless(root: Path) -> tuple[str, str | None]:
+    """Add a new worktree to the pool. Returns (wt_id, error_msg)."""
+    try:
+        state = read_state(root)
+        cfg = state.config
+
+        # Find next ID
+        existing_nums = []
+        for wt in state.worktrees:
+            m = re.match(r'wt-(\d+)', wt.id)
+            if m:
+                existing_nums.append(int(m.group(1)))
+        next_num = max(existing_nums, default=0) + 1
+        wt_id = f"wt-{next_num:02d}"
+
+        wt_rel_path = os.path.join(cfg.pool_dir, wt_id)
+        wt_abs_path = str(root / wt_rel_path)
+        wt_branch = f"{cfg.holding_branch}/{wt_id}"
+        remote_base = f"{cfg.remote}/{cfg.base_branch}"
+
+        git_ops.fetch(cfg.remote, cwd=root)
+        git_ops.create_worktree(wt_abs_path, wt_branch, remote_base, cwd=root)
+
+        new_wt = Worktree(
+            id=wt_id,
+            path=wt_rel_path,
+            status="idle",
+            branch=wt_branch,
+            last_released_at=now_iso(),
+        )
+
+        _sync_claude_settings(root, [new_wt])
+
+        with with_state_lock(root) as locked:
+            locked.worktrees.append(new_wt)
+
+        return (wt_id, None)
+    except Exception as e:
+        return ("", str(e))
+
+
+def remove_worktree_headless(root: Path, wt_id: str) -> str | None:
+    """Remove a worktree from the pool. Returns error_msg or None."""
+    try:
+        state = read_state(root)
+        wt = _find_worktree_safe(state, wt_id)
+        if not wt:
+            return f"Worktree {wt_id} not found"
+        if wt.status not in ("idle", "done"):
+            return f"{wt_id} is {wt.status} — stop it first"
+
+        wt_abs = str(root / wt.path)
+        git_ops.remove_worktree(wt_abs, cwd=root, force=True)
+        git_ops.run_git(["worktree", "prune"], cwd=root, check=False)
+        branch = f"{state.config.holding_branch}/{wt_id}"
+        git_ops.run_git(["branch", "-D", branch], cwd=root, check=False)
+
+        with with_state_lock(root) as locked:
+            locked.worktrees = [w for w in locked.worktrees if w.id != wt_id]
+
+        return None
+    except Exception as e:
+        return str(e)
 
 
 def dispatch_task_headless(root: Path, description: str) -> tuple[str, str | None]:
