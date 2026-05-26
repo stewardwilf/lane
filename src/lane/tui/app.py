@@ -34,8 +34,8 @@ class WorktreeTable(DataTable):
     def on_mount(self) -> None:
         self.add_column("ID", key="id", width=8)
         self.add_column("Status", key="status", width=10)
-        self.add_column("Task", key="task")
         self.add_column("Elapsed", key="elapsed", width=10)
+        self.add_column("Task", key="task")
         self.cursor_type = "row"
         self.zebra_stripes = True
 
@@ -370,8 +370,8 @@ class LaneDashboard(App):
                 table.add_row(
                     wt.id,
                     Text.from_markup(_status_styled(wt.status)),
-                    _task_text(wt),
                     _elapsed(wt.started_at) if wt.started_at else "—",
+                    _task_text(wt),
                     key=wt.id,
                 )
             self._table_initialized = True
