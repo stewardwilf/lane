@@ -247,7 +247,7 @@ class LaneDashboard(App):
         Binding("r", "release", "Release", show=True),
         Binding("n", "new_task", "New task", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
-        Binding("plus_sign", "add_worktree", "+Add", show=True),
+        Binding("w", "add_worktree", "Add wt", show=True),
         Binding("d", "remove_worktree", "Del", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
