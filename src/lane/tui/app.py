@@ -727,52 +727,44 @@ def _send_to_tmux(session_name: str, text: str) -> None:
 
 
 def _trim_chrome(content: str) -> str:
-    """Remove Claude's input prompt, status bar, and option areas from the bottom.
-
-    Since lane handles all input via its own UI, Claude's chrome at the
-    bottom is redundant. Trim everything from the prompt cursor (›) or
-    status bar (▸▸ accept edits) downward.
-    """
+    """Remove Claude's input chrome from the bottom of the terminal view."""
+    # Strip ANSI for analysis
     plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+    plain = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', plain)
 
     lines = content.split('\n')
     plain_lines = plain.split('\n')
 
     cut_at = len(lines)
 
-    # Walk from bottom up, find where Claude's chrome starts
-    # Skip trailing blank lines first
-    for i in range(len(plain_lines) - 1, max(len(plain_lines) - 20, 0), -1):
-        stripped = plain_lines[i].strip()
-        if not stripped:
-            cut_at = i  # Trim blank lines at bottom too
-            continue
-        # Claude's input prompt line
-        if re.match(r'^[›❯]\s', stripped):
-            cut_at = i
-            continue
-        # Status bar
-        if re.search(r'accept edits|shift.tab to cycle|esc to interrupt|/effort', stripped, re.IGNORECASE):
-            cut_at = i
-            continue
+    def is_chrome(s: str) -> bool:
+        s = s.strip()
+        if not s:
+            return True
+        # Prompt cursor (› or ❯ followed by space/cursor)
+        if re.match(r'^[›❯]\s*', s) and len(s) < 10:
+            return True
+        # Status bar keywords
+        if re.search(r'accept edits|shift.tab|esc to interrupt|/effort|esc to cancel|tab to amend|enter to select|to navigate', s, re.IGNORECASE):
+            return True
         # Permission prompt
-        if re.match(r'Do you want to proceed\?', stripped):
+        if 'Do you want to proceed' in s:
+            return True
+        # Numbered options at prompt (short lines)
+        if re.match(r'^[›❯\)\s]*\d+\.\s+\S', s) and len(s) < 60:
+            return True
+        # Separator lines (any combo of ─ _ - = ~ and box-drawing)
+        cleaned = re.sub(r'[\s─━│┌┐└┘├┤┬┴┼╌╍═║▔▁▏▕_\-=~]', '', s)
+        if not cleaned:
+            return True
+        return False
+
+    # Walk from bottom up
+    for i in range(len(plain_lines) - 1, max(len(plain_lines) - 20, 0), -1):
+        if is_chrome(plain_lines[i]):
             cut_at = i
-            continue
-        # "Esc to cancel" / "Tab to amend" footer
-        if re.match(r'Esc to cancel|Tab to amend|Enter to select|to navigate', stripped):
-            cut_at = i
-            continue
-        # Numbered options (1. Yes, 2. No etc.)
-        if re.match(r'[›❯\)\s]*\d+\.\s+', stripped):
-            cut_at = i
-            continue
-        # Separator lines (───, ___, ---)
-        if re.match(r'^[\s─_\-=~]+$', stripped) and len(stripped) > 2:
-            cut_at = i
-            continue
-        # If we hit real content, stop walking
-        break
+        else:
+            break
 
     return '\n'.join(lines[:cut_at]).rstrip()
 
