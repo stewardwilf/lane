@@ -680,38 +680,54 @@ def _send_to_tmux(session_name: str, text: str) -> None:
 
 
 def _parse_options(content: str) -> list[tuple[str, str]]:
-    """Parse numbered options from Claude's terminal output.
+    """Parse numbered options from Claude's active prompt only.
 
-    Returns list of (key, label) tuples like [("1", "Yes"), ("2", "No")].
+    Only looks at the bottom of the terminal and requires an active
+    prompt indicator (Esc to cancel, Enter to select, etc.) to avoid
+    picking up numbered items from Claude's output history.
     """
     # Strip all ANSI escape sequences
     plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
     plain = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', plain)
     plain = re.sub(r'\x1b[()][AB012]', '', plain)
     plain = re.sub(r'\x1b[78DEHM]', '', plain)
-    # Strip box-drawing, control chars, carriage returns
     plain = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\r]', '', plain)
     plain = re.sub(r'[─│┌┐└┘├┤┬┴┼╌╍═║╔╗╚╝╠╣╦╩╬▀▄█▌▐░▒▓■□●○◐◑◒◓]', '', plain)
 
-    # Check for standard Claude permission prompt first
-    if re.search(r'Do you want to proceed\?', plain):
+    # Only parse if there's an active prompt indicator on screen
+    prompt_indicators = [
+        r'Esc to cancel',
+        r'Tab to amend',
+        r'Enter to select',
+        r'Enter to continue',
+        r'to navigate',
+        r'Do you want to proceed\?',
+    ]
+    if not any(re.search(p, plain) for p in prompt_indicators):
+        return []
+
+    # Only look at the bottom portion of the terminal (last 20 lines)
+    lines = plain.splitlines()
+    bottom = '\n'.join(lines[-20:]) if len(lines) > 20 else plain
+
+    # Check for standard Claude permission prompt
+    if re.search(r'Do you want to proceed\?', bottom):
         options = []
-        if re.search(r'1\.\s*Yes\b', plain):
+        if re.search(r'1\.\s*Yes\b', bottom):
             options.append(("1", "Yes"))
-        if re.search(r'2\.\s*Yes', plain):
-            # Capture the full "Yes, ..." label
-            m2 = re.search(r'2\.\s*(Yes[^3\n]{0,40})', plain)
+        if re.search(r'2\.\s*Yes', bottom):
+            m2 = re.search(r'2\.\s*(Yes[^3\n]{0,40})', bottom)
             label = m2.group(1).strip().rstrip(',') if m2 else "Yes, allow for project"
             label = re.split(r'\s{3,}', label)[0].strip()
             options.append(("2", label))
-        if re.search(r'3\.\s*No\b', plain):
+        if re.search(r'3\.\s*No\b', bottom):
             options.append(("3", "No"))
         if options:
             return options
 
-    # Generic numbered option parsing
+    # Generic numbered option parsing — bottom of screen only
     options = []
-    for line in plain.splitlines():
+    for line in bottom.splitlines():
         line = line.strip()
         m = re.match(r'^[›❯\)\s]*(\d+)\.\s+(?:\[[ x]\]\s+)?(.+)$', line)
         if m:
