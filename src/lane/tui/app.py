@@ -761,13 +761,20 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
         options = []
         if re.search(r'1\.\s*Yes\b', bottom):
             options.append(("1", "Yes"))
-        if re.search(r'2\.\s*Yes', bottom):
-            m2 = re.search(r'2\.\s*(Yes[^3\n]{0,40})', bottom)
-            label = m2.group(1).strip().rstrip(',') if m2 else "Yes, allow for project"
+        # Option 2 could be "Yes, allow..." or "No"
+        m2 = re.search(r'2\.\s*(.+?)(?:\s{3,}|\n|$)', bottom)
+        if m2:
+            label = m2.group(1).strip()
             label = re.split(r'\s{3,}', label)[0].strip()
-            options.append(("2", label))
-        if re.search(r'3\.\s*No\b', bottom):
-            options.append(("3", "No"))
+            if len(label) < 50:
+                options.append(("2", label))
+        # Option 3 if present
+        m3 = re.search(r'3\.\s*(.+?)(?:\s{3,}|\n|$)', bottom)
+        if m3:
+            label = m3.group(1).strip()
+            label = re.split(r'\s{3,}', label)[0].strip()
+            if len(label) < 50:
+                options.append(("3", label))
         if options:
             return options
 
