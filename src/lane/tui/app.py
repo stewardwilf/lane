@@ -443,11 +443,13 @@ class LaneDashboard(App):
         if wt.status == "busy" and wt.tmux_session:
             content = _capture_tmux_pane(wt.tmux_session)
             if content is not None:
-                view.update(Text.from_ansi(content))
                 needs_input = _needs_user_input(content)
                 self._update_input_alert(wt.id, needs_input)
                 options = _parse_options(content)
                 self._set_prompt_options(options)
+                # Trim the prompt area from the view when we're showing options in our panel
+                display_content = _trim_prompt_area(content) if options else content
+                view.update(Text.from_ansi(display_content))
             return
 
         if wt.status == "done":
@@ -723,6 +725,33 @@ def _send_to_tmux(session_name: str, text: str) -> None:
         ["tmux", "send-keys", "-t", session_name, text, "Enter"],
         capture_output=True, check=False,
     )
+
+
+def _trim_prompt_area(content: str) -> str:
+    """Remove the prompt/options area from the bottom of the capture so it's not duplicated."""
+    plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
+
+    # Find where the prompt starts
+    lines = content.split('\n')
+    plain_lines = plain.split('\n')
+
+    cut_at = len(lines)
+    for i, pl in enumerate(plain_lines):
+        stripped = pl.strip()
+        if re.match(r'Do you want to proceed\?', stripped):
+            cut_at = i
+            break
+        if re.match(r'Enter to select', stripped):
+            # Walk back to find the start of the option block
+            for j in range(i - 1, max(i - 15, 0), -1):
+                if re.match(r'^\s*[›❯\)]\s*\d+\.', plain_lines[j].strip()):
+                    cut_at = j
+                    break
+            else:
+                cut_at = i
+            break
+
+    return '\n'.join(lines[:cut_at]).rstrip()
 
 
 def _parse_options(content: str) -> list[tuple[str, str]]:
