@@ -447,9 +447,8 @@ class LaneDashboard(App):
                 self._update_input_alert(wt.id, needs_input)
                 options = _parse_options(content)
                 self._set_prompt_options(options)
-                # Trim the prompt area from the view when we're showing options in our panel
-                display_content = _trim_prompt_area(content) if options else content
-                view.update(Text.from_ansi(display_content))
+                # Trim Claude's input chrome — we handle input via our own UI
+                view.update(Text.from_ansi(_trim_chrome(content)))
             return
 
         if wt.status == "done":
@@ -727,29 +726,51 @@ def _send_to_tmux(session_name: str, text: str) -> None:
     )
 
 
-def _trim_prompt_area(content: str) -> str:
-    """Remove the prompt/options area from the bottom of the capture so it's not duplicated."""
+def _trim_chrome(content: str) -> str:
+    """Remove Claude's input prompt, status bar, and option areas from the bottom.
+
+    Since lane handles all input via its own UI, Claude's chrome at the
+    bottom is redundant. Trim everything from the prompt cursor (›) or
+    status bar (▸▸ accept edits) downward.
+    """
     plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
 
-    # Find where the prompt starts
     lines = content.split('\n')
     plain_lines = plain.split('\n')
 
     cut_at = len(lines)
-    for i, pl in enumerate(plain_lines):
-        stripped = pl.strip()
+
+    # Walk from bottom up, find where Claude's chrome starts
+    for i in range(len(plain_lines) - 1, max(len(plain_lines) - 15, 0), -1):
+        stripped = plain_lines[i].strip()
+        if not stripped:
+            continue
+        # Claude's input prompt line
+        if re.match(r'^[›❯]\s', stripped):
+            cut_at = i
+            continue
+        # Status bar
+        if re.search(r'accept edits|shift.tab to cycle|esc to interrupt|/effort', stripped, re.IGNORECASE):
+            cut_at = i
+            continue
+        # Permission prompt
         if re.match(r'Do you want to proceed\?', stripped):
             cut_at = i
-            break
-        if re.match(r'Enter to select', stripped):
-            # Walk back to find the start of the option block
-            for j in range(i - 1, max(i - 15, 0), -1):
-                if re.match(r'^\s*[›❯\)]\s*\d+\.', plain_lines[j].strip()):
-                    cut_at = j
-                    break
-            else:
-                cut_at = i
-            break
+            continue
+        # "Esc to cancel" / "Tab to amend" footer
+        if re.match(r'Esc to cancel|Tab to amend|Enter to select|to navigate', stripped):
+            cut_at = i
+            continue
+        # Numbered options (1. Yes, 2. No etc.)
+        if re.match(r'[›❯\)\s]*\d+\.\s+', stripped):
+            cut_at = i
+            continue
+        # Separator lines (───, ___, ---)
+        if re.match(r'^[\s─_\-=~]+$', stripped) and len(stripped) > 2:
+            cut_at = i
+            continue
+        # If we hit real content, stop walking
+        break
 
     return '\n'.join(lines[:cut_at]).rstrip()
 
