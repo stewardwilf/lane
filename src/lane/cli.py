@@ -180,7 +180,7 @@ def task(
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
-    tmux_session = f"lane-{claimed_id}"
+    tmux_session = f"lane-{root.name}-{claimed_id}"
 
     with with_state_lock(root) as state:
         for wt in state.worktrees:
@@ -502,7 +502,7 @@ def _continue_worktree(root: Path, wt_id: str, prompt: str | None = None) -> tup
     wt_abs = str(root / wt.path)
     log_file = os.path.join(str(root), state.config.logs_dir, f"{wt_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-    tmux_session = f"lane-{wt_id}"
+    tmux_session = f"lane-{root.name}-{wt_id}"
 
     agent_cmd = list(state.config.agent_cmd)
     task_prompt = prompt or ""
@@ -658,7 +658,7 @@ def _stream_log(root: Path, wt_id: str, log_file: str, task_desc: str, branch: s
     console.print(f"  [dim]ctrl+c[/dim]  detach (agent keeps running)")
     console.print()
 
-    tmux_session = f"lane-{wt_id}"
+    tmux_session = f"lane-{root.name}-{wt_id}"
 
     try:
         while True:
@@ -886,7 +886,7 @@ def _dispatch_task_impl(root: Path, description: str) -> tuple[str, str | None]:
     log_file = os.path.join(str(root), state.config.logs_dir, f"{claimed_id}.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     Path(log_file).write_text("")
-    tmux_session = f"lane-{claimed_id}"
+    tmux_session = f"lane-{root.name}-{claimed_id}"
 
     with with_state_lock(root) as state:
         wt = _find_worktree_safe(state, claimed_id)
