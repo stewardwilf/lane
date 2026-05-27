@@ -748,7 +748,7 @@ def _trim_chrome(content: str) -> str:
         if re.search(r'accept edits|shift.tab|esc to interrupt|/effort|esc to cancel|tab to amend|enter to select|to navigate', s, re.IGNORECASE):
             return True
         # Permission prompt
-        if 'Do you want to proceed' in s:
+        if 'Do you want to' in s:
             return True
         # Numbered options at prompt (short lines)
         if re.match(r'^[›❯\)\s]*\d+\.\s+\S', s) and len(s) < 60:
@@ -792,6 +792,7 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
         r'Enter to continue',
         r'to navigate',
         r'Do you want to proceed\?',
+        r'Do you want to allow',
     ]
     if not any(re.search(p, plain) for p in prompt_indicators):
         return []
@@ -801,7 +802,7 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
     bottom = '\n'.join(lines[-20:]) if len(lines) > 20 else plain
 
     # Check for standard Claude permission prompt
-    if re.search(r'Do you want to proceed\?', bottom):
+    if re.search(r'Do you want to (proceed|allow)', bottom):
         options = []
         if re.search(r'1\.\s*Yes\b', bottom):
             options.append(("1", "Yes"))
@@ -867,6 +868,7 @@ def _needs_user_input(content: str) -> bool:
 
     indicators = [
         r'Do you want to proceed\?',
+        r'Do you want to allow',
         r'Select .+:',
         r'›\s*\d+\.',
         r'❯\s*\d+\.',
