@@ -18,7 +18,10 @@ def run_git(args: list[str], cwd: Path | str | None = None, check: bool = True) 
 
 
 def fetch(remote: str, cwd: Path | None = None) -> None:
-    run_git(["fetch", remote], cwd=cwd)
+    r = run_git(["fetch", remote], cwd=cwd, check=False)
+    if r.returncode != 0:
+        stderr = r.stderr.strip()
+        raise SystemExit(f"fatal: git fetch {remote} failed\n{stderr}\n\nDoes the remote '{remote}' exist? Check with: git remote -v")
 
 
 def branch_exists_on_remote(remote: str, branch: str, cwd: Path | None = None) -> bool:
