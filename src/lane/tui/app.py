@@ -357,12 +357,12 @@ class LaneDashboard(App):
                     event.prevent_default()
             return
 
-        # [ / ] to switch tmux windows
-        if event.character == "[":
+        # < / > to switch tmux windows
+        if event.character == "<" or event.character == "[":
             self.action_prev_window()
             event.prevent_default()
             return
-        if event.character == "]":
+        if event.character == ">" or event.character == "]":
             self.action_next_window()
             event.prevent_default()
             return
@@ -469,7 +469,7 @@ class LaneDashboard(App):
                         tabs.append(f"[bold white on #6C5CE7] {name} [/bold white on #6C5CE7]")
                     else:
                         tabs.append(f"[dim] {name} [/dim]")
-                tab_bar = "  ".join(tabs) + "  [dim][ ] switch · t add[/dim]"
+                tab_bar = "  ".join(tabs) + "  [dim]< > switch · t add[/dim]"
                 header.update(f" [bold]{wt.id}[/bold]  {tab_bar}")
             else:
                 header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· a attach · i reply · t shell[/dim]")
@@ -692,28 +692,34 @@ class LaneDashboard(App):
         Thread(target=_release, daemon=True).start()
 
     def action_prev_window(self) -> None:
-        if not self._selected_wt_id:
+        if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if not wt or not wt.tmux_session:
             return
         windows = _list_tmux_windows(wt.tmux_session)
         if len(windows) <= 1:
+            self.notify("Only one window — press t to add a shell", severity="warning")
             return
         cur = self._viewed_window.get(wt.id, 0)
-        self._viewed_window[wt.id] = (cur - 1) % len(windows)
+        new = (cur - 1) % len(windows)
+        self._viewed_window[wt.id] = new
+        self.notify(f"Window: {windows[new][1]}", timeout=1)
 
     def action_next_window(self) -> None:
-        if not self._selected_wt_id:
+        if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
         if not wt or not wt.tmux_session:
             return
         windows = _list_tmux_windows(wt.tmux_session)
         if len(windows) <= 1:
+            self.notify("Only one window — press t to add a shell", severity="warning")
             return
         cur = self._viewed_window.get(wt.id, 0)
-        self._viewed_window[wt.id] = (cur + 1) % len(windows)
+        new = (cur + 1) % len(windows)
+        self._viewed_window[wt.id] = new
+        self.notify(f"Window: {windows[new][1]}", timeout=1)
 
     def action_open_terminal(self) -> None:
         """Add a shell window to the worktree's tmux session."""
