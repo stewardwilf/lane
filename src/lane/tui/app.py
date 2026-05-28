@@ -247,6 +247,7 @@ class LaneDashboard(App):
         Binding("r", "release", "Release", show=True),
         Binding("n", "new_task", "New task", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
+        Binding("t", "open_terminal", "Term", show=True),
         Binding("w", "add_worktree", "Add wt", show=True),
         Binding("d", "remove_worktree", "Del", show=True),
         Binding("q", "quit", "Quit", show=True),
@@ -651,6 +652,22 @@ class LaneDashboard(App):
             except Exception as e:
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
         Thread(target=_release, daemon=True).start()
+
+    def action_open_terminal(self) -> None:
+        """Open a new terminal tab at the selected worktree's directory."""
+        if not self._selected_wt_id or not self._state:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt:
+            return
+        wt_abs = str(self.root / wt.path)
+        # macOS: open a new Terminal tab at the worktree directory
+        subprocess.Popen(
+            ["osascript", "-e",
+             f'tell application "Terminal" to do script "cd {wt_abs}"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.notify(f"Opened terminal at {wt.id}")
 
     def action_add_worktree(self) -> None:
         self.notify("Adding worktree...", timeout=2)
