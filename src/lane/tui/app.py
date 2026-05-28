@@ -248,8 +248,6 @@ class LaneDashboard(App):
         Binding("n", "new_task", "New task", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
         Binding("t", "open_terminal", "Term", show=True),
-        Binding("left_square_bracket", "prev_window", "[prev", show=False),
-        Binding("right_square_bracket", "next_window", "]next", show=False),
         Binding("w", "add_worktree", "Add wt", show=True),
         Binding("d", "remove_worktree", "Del", show=True),
         Binding("q", "quit", "Quit", show=True),
@@ -357,6 +355,17 @@ class LaneDashboard(App):
                     _send_key_async(wt.tmux_session, "y")
                     _send_key_async(wt.tmux_session, "Enter")
                     event.prevent_default()
+            return
+
+        # [ / ] to switch tmux windows
+        if event.character == "[":
+            self.action_prev_window()
+            event.prevent_default()
+            return
+        if event.character == "]":
+            self.action_next_window()
+            event.prevent_default()
+            return
 
     # ── State refresh ───────────────────────────────────────────
 
@@ -428,7 +437,7 @@ class LaneDashboard(App):
         if not wt:
             header.update(" [dim]select a worktree[/dim]")
         elif wt.status == "busy":
-            header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· a attach · i reply · 1-9 respond[/dim]")
+            pass  # _refresh_terminal_view handles busy header (with tabs)
         elif wt.status == "done":
             header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· i continue · r release[/dim]")
         elif wt.status == "idle":
@@ -452,7 +461,7 @@ class LaneDashboard(App):
             if windows and win_idx >= len(windows):
                 win_idx = 0
 
-            # Show window tabs in header if multiple windows
+            # Show header with window tabs
             if len(windows) > 1:
                 tabs = []
                 for i, (idx, name) in enumerate(windows):
@@ -462,6 +471,8 @@ class LaneDashboard(App):
                         tabs.append(f"[dim] {name} [/dim]")
                 tab_bar = "  ".join(tabs) + "  [dim][ ] switch · t add[/dim]"
                 header.update(f" [bold]{wt.id}[/bold]  {tab_bar}")
+            else:
+                header.update(f" [bold]{wt.id}[/bold] · {wt.task or ''} [dim]· a attach · i reply · t shell[/dim]")
 
             # Capture the specific window
             target = f"{wt.tmux_session}:{windows[win_idx][0]}" if windows else wt.tmux_session
