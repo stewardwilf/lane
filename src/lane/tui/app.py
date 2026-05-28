@@ -248,6 +248,8 @@ class LaneDashboard(App):
         Binding("n", "new_task", "New task", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
         Binding("t", "open_terminal", "Term", show=True),
+        Binding("left_square_bracket", "prev_window", "[prev", show=False),
+        Binding("right_square_bracket", "next_window", "]next", show=False),
         Binding("w", "add_worktree", "Add wt", show=True),
         Binding("d", "remove_worktree", "Del", show=True),
         Binding("q", "quit", "Quit", show=True),
@@ -261,7 +263,8 @@ class LaneDashboard(App):
     _table_initialized: bool = False
     _waiting_input: set[str]
     _notified_input: set[str]
-    _current_options: list[tuple[str, str]]  # (display_text, key_to_send)
+    _current_options: list[tuple[str, str]]
+    _viewed_window: dict[str, int]  # wt_id -> tmux window index being viewed
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
@@ -270,6 +273,7 @@ class LaneDashboard(App):
         self._waiting_input = set()
         self._notified_input = set()
         self._current_options = []
+        self._viewed_window = {}
 
     def compose(self) -> ComposeResult:
         from lane import __version__
@@ -442,14 +446,37 @@ class LaneDashboard(App):
             return
 
         if wt.status == "busy" and wt.tmux_session:
-            content = _capture_tmux_pane(wt.tmux_session)
+            # Get window list and determine which to view
+            windows = _list_tmux_windows(wt.tmux_session)
+            win_idx = self._viewed_window.get(wt.id, 0)
+            if windows and win_idx >= len(windows):
+                win_idx = 0
+
+            # Show window tabs in header if multiple windows
+            if len(windows) > 1:
+                tabs = []
+                for i, (idx, name) in enumerate(windows):
+                    if i == win_idx:
+                        tabs.append(f"[bold white on #6C5CE7] {name} [/bold white on #6C5CE7]")
+                    else:
+                        tabs.append(f"[dim] {name} [/dim]")
+                tab_bar = "  ".join(tabs) + "  [dim][ ] switch · t add[/dim]"
+                header.update(f" [bold]{wt.id}[/bold]  {tab_bar}")
+
+            # Capture the specific window
+            target = f"{wt.tmux_session}:{windows[win_idx][0]}" if windows else wt.tmux_session
+            content = _capture_tmux_pane(target)
             if content is not None:
-                needs_input = _needs_user_input(content)
-                self._update_input_alert(wt.id, needs_input)
-                options = _parse_options(content)
-                self._set_prompt_options(options)
-                # Trim Claude's input chrome — we handle input via our own UI
-                view.update(Text.from_ansi(_trim_chrome(content)))
+                # Only parse options/trim chrome on the Claude window (first one)
+                if win_idx == 0:
+                    needs_input = _needs_user_input(content)
+                    self._update_input_alert(wt.id, needs_input)
+                    options = _parse_options(content)
+                    self._set_prompt_options(options)
+                    view.update(Text.from_ansi(_trim_chrome(content)))
+                else:
+                    self._set_prompt_options([])
+                    view.update(Text.from_ansi(content))
             return
 
         if wt.status == "done":
@@ -653,6 +680,30 @@ class LaneDashboard(App):
                 self.call_from_thread(self.notify, f"Release failed: {e}", severity="error")
         Thread(target=_release, daemon=True).start()
 
+    def action_prev_window(self) -> None:
+        if not self._selected_wt_id:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt or not wt.tmux_session:
+            return
+        windows = _list_tmux_windows(wt.tmux_session)
+        if len(windows) <= 1:
+            return
+        cur = self._viewed_window.get(wt.id, 0)
+        self._viewed_window[wt.id] = (cur - 1) % len(windows)
+
+    def action_next_window(self) -> None:
+        if not self._selected_wt_id:
+            return
+        wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
+        if not wt or not wt.tmux_session:
+            return
+        windows = _list_tmux_windows(wt.tmux_session)
+        if len(windows) <= 1:
+            return
+        cur = self._viewed_window.get(wt.id, 0)
+        self._viewed_window[wt.id] = (cur + 1) % len(windows)
+
     def action_open_terminal(self) -> None:
         """Add a shell window to the worktree's tmux session."""
         if not self._selected_wt_id or not self._state:
@@ -714,6 +765,25 @@ class LaneDashboard(App):
 
 
 # ── Helpers ─────────────────────────────────────────────────────
+
+def _list_tmux_windows(session_name: str) -> list[tuple[int, str]]:
+    """List tmux windows in a session. Returns [(index, name), ...]."""
+    try:
+        r = subprocess.run(
+            ["tmux", "list-windows", "-t", session_name, "-F", "#{window_index} #{window_name}"],
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        if r.returncode == 0:
+            windows = []
+            for line in r.stdout.strip().splitlines():
+                parts = line.split(" ", 1)
+                if len(parts) == 2:
+                    windows.append((int(parts[0]), parts[1]))
+            return windows
+    except Exception:
+        pass
+    return [(0, "claude")]
+
 
 def _capture_tmux_pane(session_name: str) -> str | None:
     try:
