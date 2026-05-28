@@ -654,20 +654,19 @@ class LaneDashboard(App):
         Thread(target=_release, daemon=True).start()
 
     def action_open_terminal(self) -> None:
-        """Open a new terminal tab at the selected worktree's directory."""
+        """Add a shell window to the worktree's tmux session."""
         if not self._selected_wt_id or not self._state:
             return
         wt = next((w for w in self._state.worktrees if w.id == self._selected_wt_id), None)
-        if not wt:
+        if not wt or not wt.tmux_session:
+            self.notify("No active session — start a task first", severity="warning")
             return
         wt_abs = str(self.root / wt.path)
-        # macOS: open a new Terminal tab at the worktree directory
         subprocess.Popen(
-            ["osascript", "-e",
-             f'tell application "Terminal" to do script "cd {wt_abs}"'],
+            ["tmux", "new-window", "-t", wt.tmux_session, "-c", wt_abs],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        self.notify(f"Opened terminal at {wt.id}")
+        self.notify(f"Shell added to {wt.id} — press a to access")
 
     def action_add_worktree(self) -> None:
         self.notify("Adding worktree...", timeout=2)
