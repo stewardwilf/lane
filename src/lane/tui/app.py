@@ -446,7 +446,7 @@ class LaneDashboard(App):
             return
 
         if wt.status == "busy" and wt.tmux_session:
-            # Get window list and determine which to view
+            header = self.query_one("#pane-header", Static)
             windows = _list_tmux_windows(wt.tmux_session)
             win_idx = self._viewed_window.get(wt.id, 0)
             if windows and win_idx >= len(windows):
