@@ -253,6 +253,8 @@ class LaneDashboard(App):
         Binding("q", "quit", "Quit", show=True),
     ]
 
+    SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     root: Path
     _poll_timer: Timer | None = None
     _bg_check_timer: Timer | None = None
@@ -262,11 +264,13 @@ class LaneDashboard(App):
     _waiting_input: set[str]
     _notified_input: set[str]
     _current_options: list[tuple[str, str]]
-    _viewed_window: dict[str, int]  # wt_id -> tmux window index being viewed
+    _viewed_window: dict[str, int]
+    _tick: int
 
     def __init__(self, root: Path, **kwargs):
         super().__init__(**kwargs)
         self.root = root
+        self._tick = 0
         self._table_initialized = False
         self._waiting_input = set()
         self._notified_input = set()
@@ -370,6 +374,7 @@ class LaneDashboard(App):
     # ── State refresh ───────────────────────────────────────────
 
     def _refresh_state(self) -> None:
+        self._tick += 1
         try:
             state = read_state(self.root)
         except SystemExit:
@@ -385,7 +390,7 @@ class LaneDashboard(App):
             for wt in state.worktrees:
                 table.add_row(
                     wt.id,
-                    Text.from_markup(_status_styled(wt.status)),
+                    Text.from_markup(_status_styled(wt.status, self._tick)),
                     _elapsed(wt.started_at) if wt.started_at else "—",
                     _task_text(wt),
                     key=wt.id,
@@ -395,7 +400,7 @@ class LaneDashboard(App):
             for wt in state.worktrees:
                 try:
                     table.get_row(wt.id)
-                    table.update_cell(wt.id, "status", Text.from_markup(_status_styled(wt.status)), update_width=False)
+                    table.update_cell(wt.id, "status", Text.from_markup(_status_styled(wt.status, self._tick)), update_width=False)
                     table.update_cell(wt.id, "task", _task_text(wt), update_width=False)
                     table.update_cell(wt.id, "elapsed", _elapsed(wt.started_at) if wt.started_at else "—", update_width=False)
                 except Exception:
@@ -1059,10 +1064,15 @@ def _get_mcp_servers(root: Path) -> str | None:
     return "\n".join(lines)
 
 
-def _status_styled(status: str) -> str:
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _status_styled(status: str, tick: int = 0) -> str:
+    if status == "busy":
+        frame = SPINNER_FRAMES[tick % len(SPINNER_FRAMES)]
+        return f"[#7C6FF7]{frame} BUSY[/#7C6FF7]"
     return {
         "idle": "[#00B894]● IDLE[/#00B894]",
-        "busy": "[#7C6FF7]● BUSY[/#7C6FF7]",
         "done": "[#FDCB6E]● DONE[/#FDCB6E]",
         "claiming": "[dim]○ CLAIM[/dim]",
         "error": "[#FF6B6B]● ERROR[/#FF6B6B]",
