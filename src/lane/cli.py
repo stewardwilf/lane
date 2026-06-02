@@ -51,6 +51,14 @@ def init(
     console.print(f"Fetching from {remote}...")
     git_ops.fetch(remote, cwd=root)
 
+    # Clean up any stale worktree refs and holding branches from a previous init
+    git_ops.run_git(["worktree", "prune"], cwd=root, check=False)
+    stale = git_ops.run_git(["branch", "--list", f"{holding}/*"], cwd=root, check=False)
+    for line in stale.stdout.strip().splitlines():
+        branch = line.strip().lstrip("+ *")
+        if branch:
+            git_ops.run_git(["branch", "-D", branch], cwd=root, check=False)
+
     remote_base = f"{remote}/{base}"
     if not git_ops.local_branch_exists(remote_base, cwd=root):
         console.print(f"[red]Branch {remote_base} not found.[/red]")
