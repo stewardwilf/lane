@@ -971,23 +971,25 @@ def _elapsed(started_at: str | None) -> str:
 
 
 def _needs_user_input(content: str) -> bool:
+    """Only true when Claude is actually waiting for user input at the bottom of the screen."""
     plain = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', content)
     plain = re.sub(r'\x1b\][^\x07]*\x07', '', plain)
 
-    indicators = [
-        r'Do you want to proceed\?',
-        r'Do you want to allow',
-        r'Select .+:',
-        r'›\s*\d+\.',
-        r'❯\s*\d+\.',
-        r'\)\s*\d+\.',
-        r'Esc to cancel',
-        r'Tab to amend',
-        r'Enter to continue',
-        r'\[Y/n\]',
-        r'\[y/N\]',
-    ]
-    return any(re.search(p, plain) for p in indicators)
+    # Only check the bottom 10 lines — prompts always appear at the bottom
+    lines = plain.strip().splitlines()
+    bottom = '\n'.join(lines[-10:]) if len(lines) > 10 else plain
+
+    # Must have a concrete prompt footer to count as needing input
+    has_footer = bool(re.search(
+        r'Esc to cancel|Tab to amend|Enter to select|Enter to continue|\[Y/n\]|\[y/N\]',
+        bottom
+    ))
+    has_prompt = bool(re.search(
+        r'Do you want to proceed|Do you want to allow',
+        bottom
+    ))
+
+    return has_footer or has_prompt
 
 
 def _system_notify(title: str, message: str) -> None:
