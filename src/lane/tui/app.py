@@ -853,10 +853,10 @@ def _trim_chrome(content: str) -> str:
         if re.match(r'^[›❯]\s*', s) and len(s) < 10:
             return True
         # Status bar keywords
-        if re.search(r'accept edits|shift.tab|esc to interrupt|/effort|esc to cancel|tab to amend|enter to select|to navigate', s, re.IGNORECASE):
+        if re.search(r'accept edits|shift.tab|esc to interrupt|/effort|esc to cancel|tab to amend|enter to select|to navigate|ctrl-g to edit', s, re.IGNORECASE):
             return True
         # Permission prompt
-        if 'Do you want to' in s:
+        if 'you want to' in s.lower() or 'you like to' in s.lower():
             return True
         # Numbered options at prompt (short lines)
         if re.match(r'^[›❯\)\s]*\d+\.\s+\S', s) and len(s) < 60:
@@ -910,7 +910,7 @@ def _parse_options(content: str) -> list[tuple[str, str]]:
     bottom = '\n'.join(lines[-20:]) if len(lines) > 20 else plain
 
     # Check for standard Claude permission prompt
-    if re.search(r'Do you want to (proceed|allow)', bottom):
+    if re.search(r'(Do|Would) you (want|like) to (proceed|allow|continue)', bottom):
         options = []
         if re.search(r'1\.\s*Yes\b', bottom):
             options.append(("1", "Yes"))
@@ -979,13 +979,12 @@ def _needs_user_input(content: str) -> bool:
     lines = plain.strip().splitlines()
     bottom = '\n'.join(lines[-10:]) if len(lines) > 10 else plain
 
-    # Must have a concrete prompt footer to count as needing input
     has_footer = bool(re.search(
-        r'Esc to cancel|Tab to amend|Enter to select|Enter to continue|\[Y/n\]|\[y/N\]',
+        r'Esc to cancel|Tab to amend|Enter to select|Enter to continue|ctrl-g to edit|\[Y/n\]|\[y/N\]',
         bottom
     ))
     has_prompt = bool(re.search(
-        r'Do you want to proceed|Do you want to allow',
+        r'Do you want to proceed|Do you want to allow|Would you like to proceed|Would you like to continue',
         bottom
     ))
 
