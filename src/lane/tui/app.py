@@ -190,6 +190,61 @@ class TaskInputScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class PRSelectScreen(ModalScreen[dict | None]):
+    """Modal showing open PRs — select one to dispatch."""
+
+    CSS = """
+    PRSelectScreen { align: center middle; }
+    #pr-dialog {
+        width: 90; height: auto; max-height: 30;
+        padding: 1 2; background: $surface;
+        border: thick $primary-background;
+    }
+    #pr-label { margin-bottom: 1; }
+    #pr-list { height: auto; max-height: 20; }
+    #pr-hint { height: 1; color: $text-muted; margin-top: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, prs: list, **kwargs):
+        super().__init__(**kwargs)
+        self._prs = prs
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="pr-dialog"):
+            yield Label(f"[bold]Open PRs[/bold]  [dim]{len(self._prs)} found[/dim]", id="pr-label")
+            pr_list = OptionList(id="pr-list")
+            for pr in self._prs:
+                issues = []
+                if pr.unresolved_comments:
+                    issues.append(f"[yellow]{len(pr.unresolved_comments)} comments[/yellow]")
+                if pr.ci_failing:
+                    issues.append(f"[red]CI failing[/red]")
+                if not issues:
+                    issues.append("[green]clean[/green]")
+                label = f"#{pr.number}  {pr.title}  {'  '.join(issues)}"
+                pr_list.add_option(Option(label, id=f"pr-{pr.number}"))
+            yield pr_list
+            yield Static("[dim]Enter to dispatch · Escape to cancel[/dim]", id="pr-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#pr-list", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id:
+            num = int(event.option.id.replace("pr-", ""))
+            pr = next((p for p in self._prs if p.number == num), None)
+            if pr:
+                self.dismiss({"number": pr.number, "branch": pr.branch, "title": pr.title,
+                              "comments": pr.unresolved_comments, "ci_failing": pr.ci_failing})
+                return
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class LaneDashboard(App):
     TITLE = "lane"
 
@@ -246,6 +301,7 @@ class LaneDashboard(App):
         Binding("s", "stop", "Stop", show=True),
         Binding("r", "release", "Release", show=True),
         Binding("n", "new_task", "New task", show=True),
+        Binding("p", "scan_prs", "PRs", show=True),
         Binding("i", "focus_reply", "Reply", show=True),
         Binding("t", "open_terminal", "Term", show=True),
         Binding("w", "add_worktree", "Add wt", show=True),
@@ -585,6 +641,53 @@ class LaneDashboard(App):
 
     def action_focus_reply(self) -> None:
         self.query_one("#reply-input", ReplyInput).focus()
+
+    def action_scan_prs(self) -> None:
+        self.notify("Scanning PRs...", timeout=3)
+        def _scan():
+            try:
+                from lane.pr import list_my_prs, build_pr_prompt
+                prs = list_my_prs()
+                if not prs:
+                    self.call_from_thread(self.notify, "No open PRs found", severity="warning")
+                    return
+                # Show the PR selection screen on the main thread
+                self.call_from_thread(self._show_pr_screen, prs)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        Thread(target=_scan, daemon=True).start()
+
+    def _show_pr_screen(self, prs) -> None:
+        self.push_screen(PRSelectScreen(prs), self._on_pr_selected)
+
+    def _on_pr_selected(self, result: dict | None) -> None:
+        if not result:
+            return
+        pr_num = result["number"]
+        pr_branch = result["branch"]
+        self.notify(f"Dispatching PR #{pr_num} to worktree...", timeout=3)
+        def _dispatch():
+            try:
+                from lane.pr import build_pr_prompt, PullRequest
+                from lane.cli import dispatch_pr_headless
+                # Rebuild the prompt
+                pr = PullRequest(
+                    number=result["number"], title=result["title"],
+                    branch=result["branch"], url="",
+                    unresolved_comments=result.get("comments", []),
+                    ci_failing=result.get("ci_failing", False),
+                    ci_summary="",
+                )
+                prompt = build_pr_prompt(pr)
+                wt_id, err = dispatch_pr_headless(self.root, pr_num, pr_branch, prompt)
+                if err:
+                    self.call_from_thread(self.notify, f"Failed: {err}", severity="error", timeout=5)
+                else:
+                    self.call_from_thread(self.notify, f"PR #{pr_num} → {wt_id}", timeout=3)
+                    self.call_from_thread(self._select_worktree, wt_id)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        Thread(target=_dispatch, daemon=True).start()
 
     def action_new_task(self) -> None:
         self.push_screen(
