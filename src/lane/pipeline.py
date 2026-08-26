@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 from lane import slack_notify, stream, tickets as tk
-from lane.runner import is_pid_alive
 from lane.state import now_iso, read_state, with_state_lock
 
 SPEC_DIR_TEMPLATE = ".claude/auto-ticket/{ticket}"
@@ -218,6 +217,27 @@ def _apply_markers(ticket: tk.Ticket, markers: list[stream.Marker]) -> str | Non
 
 # ── monitoring ───────────────────────────────────────────────────
 
+def _pid_running(pid: int | None) -> bool:
+    """Alive check that treats zombies as dead and reaps our own exited children."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return False
+    except ChildProcessError:
+        pass
+    r = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    stat = r.stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
+
 def poll_running(root: Path) -> None:
     store = tk.read_tickets(root)
     for ticket in [t for t in store.tickets if t.state == tk.RUNNING]:
@@ -231,8 +251,8 @@ def poll_running(root: Path) -> None:
             t.log_offset = read.new_offset
             ticket = t
 
-        alive = is_pid_alive(ticket.pid or -1)
-        if alive:
+        session_over = read.result_text is not None or not _pid_running(ticket.pid)
+        if not session_over:
             _check_stuck(root, ticket)
             continue
 
@@ -290,7 +310,7 @@ def _finalize(root: Path, ticket: tk.Ticket, terminal: str | None, result_text: 
     else:
         new_state = tk.NEEDS_HUMAN
         _hold_worktree(root, ticket.wt_id)
-        detail = ticket.error or _log_tail(ticket.log_path)
+        detail = ticket.error or (result_text or "").strip()[:500] or _log_tail(ticket.log_path)
         slack_notify.post_message(
             f":rotating_light: `{ticket.id}` needs a human (phase: {ticket.phase or '?'}, "
             f"worktree {ticket.wt_id} kept for inspection).\n{detail}"

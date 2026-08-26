@@ -597,10 +597,14 @@ def requeue(
         if t.state == tk.RUNNING:
             console.print(f"[red]{t.id} is running — `lane stop {t.wt_id}` first.[/red]")
             raise typer.Exit(1)
+        held_wt = t.wt_id
         t.state = tk.QUEUED
         t.error = None
         t.stuck_notified = False
+        t.wt_id = None
         t.touch()
+    if held_wt:
+        _do_release(root, held_wt)
     console.print(f"[green]{ticket_id.upper()} requeued.[/green]")
 
 
