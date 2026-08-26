@@ -61,6 +61,44 @@ From the dashboard:
 | `lane release <wt-id>` | Auto-commit changes, reset worktree to idle |
 | `lane destroy` | Tear down the entire pool |
 
+### Ticket pipeline
+
+| Command | Description |
+|---|---|
+| `lane queue <BDLS-1234> ...` | Queue Linear tickets for the auto-ticket pipeline |
+| `lane pipeline [--once]` | Run the scheduler: dispatch, monitor, digest, resume |
+| `lane tickets [-f json]` | Show ticket pipeline status |
+| `lane answer <id> "<text>"` | Answer a ticket parked on questions and requeue |
+| `lane approve <id>` | Approve a ticket parked on the risk gate and requeue |
+| `lane requeue <id>` | Send a needs-human/done ticket back to the queue |
+| `lane logs-ticket <id> [-f]` | Tail a ticket's headless run log |
+
+## Ticket pipeline
+
+The pipeline turns a Linear ticket ID into a draft PR with no interactive session. Each queued ticket is dispatched to an idle worktree as a headless run (`claude -p "/auto-ticket <ID>" --dangerously-skip-permissions --output-format stream-json`). The repo must define an `/auto-ticket` skill that emits `::at-*::` status markers; lane parses those from the stream-json log to drive a state machine:
+
+```
+queued -> running -> awaiting-answers / awaiting-approval   (parked, worktree released)
+                  -> pr-open                                 (done, worktree released)
+                  -> needs-human                             (worktree kept for inspection)
+```
+
+Parked tickets resume when answered: via Slack thread reply, or `lane answer` / `lane approve`. Spec artifacts (`.claude/auto-ticket/<ID>/`) are saved to `.lane/specs/` on park and restored on resume, so a resumed ticket may land in a different worktree without re-speccing.
+
+### Slack
+
+Set these to get digests and question round-trips in Slack; without them everything prints to stdout and you answer via the CLI:
+
+```bash
+export LANE_SLACK_BOT_TOKEN=xoxb-...   # chat:write, im:write, im:history
+export LANE_SLACK_CHANNEL=C0123456789  # digest channel
+export LANE_SLACK_DM_USER=U0123456789  # who gets question/approval DMs
+```
+
+The scheduler posts a digest of all active tickets every 2 minutes (`LANE_DIGEST_SECONDS`), DMs parked questions and risk-gate approvals, polls the DM thread for your reply, and requeues the ticket automatically. A run with no output for 15 minutes (`LANE_STUCK_MINUTES`) triggers a stuck alert.
+
+Other knobs: `LANE_TICKET_PROMPT` (default `/auto-ticket {ticket}`), `LANE_CLAUDE_BIN`, `LANE_POLL_SECONDS`.
+
 ## Dashboard
 
 ### Keybinds

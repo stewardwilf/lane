@@ -464,6 +464,182 @@ def remove_wt(
     console.print(f"[green]Removed {wt_id}.[/green]")
 
 
+# ── ticket pipeline ─────────────────────────────────────────────
+
+@app.command()
+def queue(
+    ticket_ids: list[str] = typer.Argument(..., help="Linear ticket IDs (e.g. BDLS-1234 BDLS-5678)."),
+):
+    """Queue tickets for the auto-ticket pipeline. Run `lane pipeline` to process them."""
+    from lane.tickets import Ticket, with_tickets_lock
+
+    root = find_root()
+    read_state(root)
+
+    added, skipped = [], []
+    with with_tickets_lock(root) as store:
+        for ticket_id in ticket_ids:
+            tid = ticket_id.upper()
+            if store.find(tid):
+                skipped.append(tid)
+                continue
+            store.tickets.append(Ticket(id=tid))
+            added.append(tid)
+
+    for tid in added:
+        console.print(f"  [green]✓[/green] queued [bold]{tid}[/bold]")
+    for tid in skipped:
+        console.print(f"  [yellow]-[/yellow] {tid} already tracked (use `lane requeue {tid}` to rerun)")
+    if added:
+        console.print("\nRun [bold]lane pipeline[/bold] to start processing.")
+
+
+@app.command(name="tickets")
+def tickets_status(
+    fmt: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
+):
+    """Show ticket pipeline status."""
+    import json as json_mod
+    from lane import tickets as tk
+
+    root = find_root()
+    store = tk.read_tickets(root)
+
+    if fmt == "json":
+        console.print_json(json_mod.dumps(store.to_dict()))
+        return
+
+    if not store.tickets:
+        console.print("No tickets queued. Use [bold]lane queue BDLS-XXXX[/bold].")
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, pad_edge=False)
+    table.add_column("Ticket", style="bold", width=12)
+    table.add_column("State", width=18)
+    table.add_column("Phase", width=8)
+    table.add_column("WT", width=6)
+    table.add_column("Detail", min_width=30)
+
+    for t in store.tickets:
+        detail = t.pr_url or t.error or t.note or ("; ".join(t.questions) if t.questions else "—")
+        table.add_row(t.id, _ticket_state_styled(t.state), t.phase or "—", t.wt_id or "—", detail)
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def pipeline(
+    once: bool = typer.Option(False, "--once", help="Run one scheduler tick and exit."),
+):
+    """Run the pipeline scheduler: dispatch queued tickets, monitor runs, post digests."""
+    from lane import pipeline as pl
+    from lane import slack_notify
+
+    root = find_root()
+    read_state(root)
+
+    if not slack_notify.enabled():
+        console.print("[yellow]Slack not configured[/yellow] (LANE_SLACK_BOT_TOKEN) — notifications print to stdout; answer with `lane answer` / `lane approve`.")
+
+    console.print("[bold]lane pipeline[/bold] running — ctrl+c to stop (agents keep running).")
+    try:
+        pl.run_loop(root, once=once)
+    except KeyboardInterrupt:
+        console.print("\nScheduler stopped. Running agents continue; restart with [bold]lane pipeline[/bold].")
+
+
+@app.command()
+def answer(
+    ticket_id: str = typer.Argument(..., help="Ticket ID."),
+    text: str = typer.Argument(..., help="Answers to the parked questions."),
+):
+    """Answer a ticket parked on questions and requeue it."""
+    from lane import pipeline as pl
+
+    root = find_root()
+    err = pl.answer_ticket(root, ticket_id, text)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{ticket_id.upper()} requeued with answers.[/green]")
+
+
+@app.command()
+def approve(
+    ticket_id: str = typer.Argument(..., help="Ticket ID."),
+):
+    """Approve a ticket parked on the risk gate and requeue it."""
+    from lane import pipeline as pl
+
+    root = find_root()
+    err = pl.approve_ticket(root, ticket_id)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{ticket_id.upper()} approved and requeued.[/green]")
+
+
+@app.command()
+def requeue(
+    ticket_id: str = typer.Argument(..., help="Ticket ID to send back to the queue."),
+):
+    """Requeue a needs-human, done, or failed ticket for another run."""
+    from lane import tickets as tk
+
+    root = find_root()
+    with tk.with_tickets_lock(root) as store:
+        t = store.find(ticket_id)
+        if t is None:
+            console.print(f"[red]Ticket {ticket_id} not found.[/red]")
+            raise typer.Exit(1)
+        if t.state == tk.RUNNING:
+            console.print(f"[red]{t.id} is running — `lane stop {t.wt_id}` first.[/red]")
+            raise typer.Exit(1)
+        t.state = tk.QUEUED
+        t.error = None
+        t.stuck_notified = False
+        t.touch()
+    console.print(f"[green]{ticket_id.upper()} requeued.[/green]")
+
+
+@app.command(name="logs-ticket")
+def logs_ticket(
+    ticket_id: str = typer.Argument(..., help="Ticket ID."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output."),
+):
+    """Tail the headless run log for a ticket."""
+    from lane import tickets as tk
+
+    root = find_root()
+    t = tk.read_tickets(root).find(ticket_id)
+    if t is None or not t.log_path or not Path(t.log_path).exists():
+        console.print(f"[yellow]No log for {ticket_id}.[/yellow]")
+        raise typer.Exit(1)
+
+    args = ["tail"]
+    if follow:
+        args.append("-f")
+    args.extend(["-n", "100", t.log_path])
+    try:
+        subprocess.run(args)
+    except KeyboardInterrupt:
+        pass
+
+
+def _ticket_state_styled(state: str) -> str:
+    return {
+        "queued": "[dim]QUEUED[/dim]",
+        "running": "[blue]RUNNING[/blue]",
+        "awaiting-answers": "[yellow]NEEDS ANSWERS[/yellow]",
+        "awaiting-approval": "[yellow]NEEDS APPROVAL[/yellow]",
+        "pr-open": "[green]PR OPEN[/green]",
+        "needs-human": "[red]NEEDS HUMAN[/red]",
+        "done": "[green]DONE[/green]",
+    }.get(state, state)
+
+
 # ── version ─────────────────────────────────────────────────────
 
 @app.command()
